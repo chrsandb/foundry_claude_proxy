@@ -1,0 +1,6 @@
+# Virtual env and caches
+.venv/
+__pycache__/
+
+# Local config
+.env
