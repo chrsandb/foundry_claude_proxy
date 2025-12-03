@@ -1,12 +1,12 @@
 # Agent Guide
 
-- **Purpose**: Local FastAPI proxy that exposes an LM Studio–compatible OpenAI API at `http://127.0.0.1:1234/v1` and forwards requests to Azure AI Foundry Responses API using Azure CLI auth.
+- **Purpose**: Local FastAPI proxy that exposes an LM Studio–compatible OpenAI API at `http://127.0.0.1:1234/v1` and forwards requests to Azure AI Foundry Responses API using API key (preferred) or Azure CLI auth.
 - **Key file**: `lmstudio_claude_proxy_az.py` (only source file).
 - **Endpoints**: `GET /v1/models` returns a single configured model; `POST /v1/chat/completions` supports streaming SSE and non-streaming JSON; bridges simple Void-style tool tags → OpenAI `tool_calls` (streams tool_calls as OpenAI-style deltas with index/id/arguments).
-- **Auth**: Obtains bearer via `az account get-access-token --scope https://ai.azure.com/.default`; no key storage. Fails if `az` login/subscription not set.
+- **Auth**: Without `FOUNDRY_API_KEY`, uses Azure CLI bearer (`az account get-access-token --scope https://ai.azure.com/.default`). With `FOUNDRY_API_KEY`, uses the Anthropic endpoint (`https://<resource>.services.ai.azure.com/anthropic/v1/messages`) via the AnthropicFoundry SDK and `api-key` (no AAD fallback). Streaming requests are served from a non-stream call and re-streamed.
 
 ## Configuration
-- Preferred: add `.env` with `FOUNDRY_RESOURCE`, `PROJECT_NAME`, `CLAUDE_MODEL`, `API_VERSION` (env vars override `.env`).
+- Preferred: add `.env` with `FOUNDRY_RESOURCE`, `PROJECT_NAME`, `CLAUDE_MODEL`, `API_VERSION`, `FOUNDRY_API_KEY` (env vars override `.env`; API key preferred when set). Tools are only prompted when the client provides a `tools`/`functions` list.
 - Foundry URL is built from those constants.
 - Uses `requests` for upstream calls; `fastapi`/`uvicorn` for serving.
 - Debug logging: set env `PROXY_DEBUG=1` or pass `--proxy-debug` in the process args (silent by default).

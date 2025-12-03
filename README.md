@@ -2,24 +2,25 @@
 Use Claude Sonnet 4.5 (or any Azure Foundry model) inside Void, LM Studio, OpenAI SDKs, or any OpenAI‑compatible client.
 
 - Local endpoint: `http://127.0.0.1:1234/v1`
-- Auth: Azure CLI (`az account get-access-token --scope https://ai.azure.com/.default`)
-- Upstream: Azure AI Foundry Responses API
+- Auth paths: Azure CLI (Responses API) or API key (Anthropic endpoint)
+- Upstream: Azure AI Foundry Responses API (AAD) or Anthropic endpoint (api-key)
 
 ## Features
 - OpenAI-compatible: `/v1/models`, `/v1/chat/completions`
 - Streaming + non-stream chat completions (LM Studio SSE)
 - Streaming tool calls (`tool_calls` deltas) with `read_file` bridge
 - Works with Void (LM Studio provider), LM Studio-style clients, OpenAI SDKs, curl
+- Auth paths: Azure CLI (Responses API, default) or Anthropic endpoint with API key
 
 ## External Dependencies
 - Python 3.9+ with `pip`
-- Python packages: `fastapi`, `uvicorn`, `requests`
-- Azure CLI (`az`) for auth (`az account get-access-token --scope https://ai.azure.com/.default`)
+- Python packages: `fastapi`, `uvicorn`, `requests`, `anthropic` (installed via `pip install -r requirements.txt`)
+- Azure CLI (`az`) **only if you use AAD auth** (`az account get-access-token --scope https://ai.azure.com/.default`)
 
-### Install Azure CLI
-- macOS: `brew update && brew install azure-cli` (Homebrew)
+### Install Azure CLI (AAD path only)
+- macOS: `brew update && brew install azure-cli`
 - Linux (Ubuntu/Debian): `curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash`
-- Windows: Use the MSI from https://aka.ms/installazurecliwindows or `winget install -e --id Microsoft.AzureCLI`
+- Windows: MSI https://aka.ms/installazurecliwindows or `winget install -e --id Microsoft.AzureCLI`
 
 ## Contents
 - `lmstudio_claude_proxy_az.py` — main proxy server
@@ -39,7 +40,7 @@ source .venv/bin/activate            # Windows: .venv\Scripts\activate
 ```
 3) Install dependencies
 ```shell
-pip install fastapi uvicorn requests
+pip install -r requirements.txt
 ```
 4) Configure via `.env` (or environment variables)
 ```
@@ -48,13 +49,19 @@ PROJECT_NAME=myproject
 CLAUDE_MODEL=claude-sonnet-4-5
 # Optional
 API_VERSION=2025-11-15-preview
+# Optional (use Anthropic endpoint with API key instead of AAD)
+FOUNDRY_API_KEY=<your-foundry-api-key>
 ```
-5) Log into Azure
-```shell
-az login
-az account set --subscription "<YOUR-SUBSCRIPTION-ID>"   # if needed
-```
-Make sure `az account get-access-token --scope https://ai.azure.com/.default` succeeds.
+5) Auth choice
+- AAD (default, no `FOUNDRY_API_KEY`):  
+  ```shell
+  az login
+  az account set --subscription "<YOUR-SUBSCRIPTION-ID>"   # if needed
+  ```
+  Ensure `az account get-access-token --scope https://ai.azure.com/.default` succeeds.
+- API key: set `FOUNDRY_API_KEY` and skip Azure CLI.
+   - Endpoint used: `https://<FOUNDRY_RESOURCE>.services.ai.azure.com/anthropic/v1/messages`
+   - No AAD fallback when `FOUNDRY_API_KEY` is set.
 
 ## Run
 ```shell
@@ -115,11 +122,15 @@ data: [DONE]
   - Standard OpenAI chat format
   - Optional: `stream`, `max_tokens`, `temperature`
   - Tool bridge: `<read_file>` tags, `<tool_call>{...}</tool_call>`, and Anthropic-style `[{type:'tool_use',...}]` normalized to OpenAI `tool_calls` (`{"uri": "<path>"}` for read_file)
+  - Auth:
+    - AAD path: `Authorization: Bearer <az token>` (Responses API)
+    - API key path: `api-key` (Anthropic endpoint) — no AAD fallback when set
 
 ## How It Works
 - Client sends OpenAI-style chat to `localhost:1234`.
-- Proxy builds a prompt, gets a bearer via Azure CLI, and POSTs to Foundry Responses API.
-- Maps Foundry output to OpenAI chat completions:
+- If no API key: proxy builds a prompt, gets a bearer via Azure CLI, and POSTs to Foundry Responses API.
+- If API key set: proxy converts messages to Anthropic format and calls `https://<resource>.services.ai.azure.com/anthropic/v1/messages`.
+- Maps upstream output to OpenAI chat completions:
   - Streaming: SSE chunks (with tool_call deltas when present)
   - Non-stream: single JSON
 - Tool bridge emits OpenAI `tool_calls` compatible with Void’s LM Studio provider.

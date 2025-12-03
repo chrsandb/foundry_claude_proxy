@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 import requests
+from anthropic import AnthropicFoundry, BadRequestError
 
 # ---------- Config helpers ----------
 def load_env_file(path: str = ".env") -> dict:
@@ -52,6 +53,7 @@ FOUNDRY_RESOURCE = _env("FOUNDRY_RESOURCE", "your-foundry-resource")          # 
 PROJECT_NAME     = _env("PROJECT_NAME", "your-foundry-project")               # your Foundry project
 CLAUDE_MODEL     = _env("CLAUDE_MODEL", "claude-sonnet-4-5")                  # model or router name
 API_VERSION      = _env("API_VERSION", "2025-11-15-preview")
+FOUNDRY_API_KEY  = _env("FOUNDRY_API_KEY", "")                                # optional: API key (Anthropic endpoint)
 
 FOUNDRY_URL = (
     f"https://{FOUNDRY_RESOURCE}.services.ai.azure.com/"
@@ -107,7 +109,7 @@ def messages_to_prompt(messages, tools=None):
     return "\n".join(parts)
 
 
-def call_foundry(prompt, max_tokens=None, temperature=None):
+def call_foundry_responses(prompt, max_tokens=None, temperature=None):
     payload = {"model": CLAUDE_MODEL, "input": prompt}
 
     if max_tokens is not None:
@@ -115,32 +117,108 @@ def call_foundry(prompt, max_tokens=None, temperature=None):
     if temperature is not None:
         payload["temperature"] = temperature
 
-    token = get_token_via_az()
+    def _headers_api_key():
+        return {
+            "api-key": FOUNDRY_API_KEY,
+            "Ocp-Apim-Subscription-Key": FOUNDRY_API_KEY,
+            "Content-Type": "application/json",
+        }
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
+    def _headers_aad():
+        token = get_token_via_az()
+        return {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
 
-    dlog("foundry_payload", payload)
-    resp = requests.post(FOUNDRY_URL, headers=headers, json=payload)
+    def _post(headers, mode):
+        dlog("foundry_payload", {"payload": payload, "auth_mode": mode})
+        resp = requests.post(FOUNDRY_URL, headers=headers, json=payload)
+        dlog("foundry_http", {"auth_mode": mode, "status": resp.status_code, "text_preview": resp.text[:500]})
+        return resp
+
+    # Auth: Responses API supports AAD; API keys are not supported here.
+    resp = _post(_headers_aad(), "aad")
     resp.raise_for_status()
-    data = resp.json()
+
+    try:
+        data = resp.json()
+    except Exception:
+        dlog("foundry_response_parse_error", resp.text)
+        raise
     dlog("foundry_response", {"model": data.get("model"), "id": data.get("id"), "usage": data.get("usage")})
     return data
 
 
-def extract_text(foundry_json: dict) -> str:
+def _to_dict(obj):
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
     try:
-        for item in foundry_json.get("output", []):
+        return json.loads(obj.model_dump_json())  # type: ignore
+    except Exception:
+        try:
+            return obj.__dict__
+        except Exception:
+            return {}
+
+
+def extract_text(foundry_json: dict) -> str:
+    # Handle output as list or dict, plus a few fallbacks.
+    try:
+        output = foundry_json.get("output", [])
+        if isinstance(output, dict):
+            output = [output]
+        for item in output:
             if item.get("type") == "message":
                 for c in item.get("content", []):
                     if c.get("type") in ("output_text", "text"):
                         if c.get("text"):
                             return c["text"]
+            # Some responses may have direct text
+            if item.get("text"):
+                return item.get("text")
+        # Fallbacks
+        if foundry_json.get("output_text"):
+            return foundry_json["output_text"]
+        if foundry_json.get("response_text"):
+            return foundry_json["response_text"]
+        # OpenAI-style fallback
+        choices = foundry_json.get("choices")
+        if isinstance(choices, list) and choices:
+            msg = choices[0].get("message") or {}
+            if isinstance(msg, dict):
+                content = msg.get("content")
+                if isinstance(content, str):
+                    return content
     except Exception:
         pass
     return ""
+
+
+def call_foundry_anthropic(messages, max_tokens=None, temperature=None):
+    if not FOUNDRY_API_KEY:
+        raise RuntimeError("FOUNDRY_API_KEY is required for Anthropic endpoint calls")
+
+    base_url = f"https://{FOUNDRY_RESOURCE}.services.ai.azure.com/anthropic/"
+    client = AnthropicFoundry(api_key=FOUNDRY_API_KEY, base_url=base_url)
+
+    dlog("foundry_payload", {"payload": messages, "auth_mode": "api-key-anthropic"})
+    kwargs = {
+        "model": CLAUDE_MODEL,
+        "system": messages.get("system"),
+        "messages": messages.get("messages"),
+        "max_tokens": max_tokens or 1024,
+        "stream": False,
+    }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+
+    resp = client.messages.create(**kwargs)
+    data = _to_dict(resp)
+    dlog("foundry_response", {"model": data.get("model"), "id": data.get("id"), "usage": data.get("usage"), "content_preview": data.get("content")})
+    return data
 
 
 def map_usage(foundry_json: dict) -> dict:
@@ -302,25 +380,172 @@ async def chat_completions(request: Request):
         return JSONResponse(error_response("No 'messages' field provided"))
 
     stream = bool(body.get("stream", False))
-    # Support both "tools" and legacy "functions" lists; fall back to a single read_file tool so tags can still be bridged.
-    tools = body.get("tools") or body.get("functions") or []
-    fallback_tools = [{"type": "function", "function": {"name": "read_file"}}]
-    tool_defs = tools if tools else fallback_tools
+    # Support both "tools" and legacy "functions" lists; no fallback when client doesn't request tools.
+    tool_defs = body.get("tools") or body.get("functions") or []
     has_tools = bool(tool_defs)
 
-    prompt = messages_to_prompt(messages, tools=tool_defs)
+    prompt = messages_to_prompt(messages, tools=tool_defs if has_tools else None)
     dlog("incoming_request", {"stream": stream, "has_tools": has_tools, "tools_keys": [t.get('function', {}).get('name') for t in tool_defs], "prompt": prompt})
 
     max_tokens = body.get("max_tokens")
     temperature = body.get("temperature")
 
     try:
-        foundry_json = call_foundry(prompt, max_tokens=max_tokens, temperature=temperature)
+        if FOUNDRY_API_KEY:
+            # Anthropic endpoint with API key
+            payload = to_anthropic_payload(messages)
+            if stream:
+                base_url = f"https://{FOUNDRY_RESOURCE}.services.ai.azure.com/anthropic/"
+                client = AnthropicFoundry(api_key=FOUNDRY_API_KEY, base_url=base_url)
+
+                async def event_gen_api_key_stream():
+                    model_name_stream = CLAUDE_MODEL
+                    created_ts = int(time.time())
+                    resp_id_stream = "resp_stream"
+                    try:
+                        with client.messages.stream(
+                            model=CLAUDE_MODEL,
+                            system=payload.get("system"),
+                            messages=payload.get("messages"),
+                            max_tokens=max_tokens or 1024,
+                            **({"temperature": temperature} if temperature is not None else {}),
+                        ) as stream_obj:
+                            for event in stream_obj:
+                                ev = _to_dict(event)
+                                etype = ev.get("type")
+                                if etype == "message_start":
+                                    msg = ev.get("message", {})
+                                    resp_id_stream = msg.get("id", resp_id_stream)
+                                    model_name_stream = msg.get("model", model_name_stream)
+                                    created_ts = int(msg.get("created_at", created_ts))
+                                elif etype == "content_block_delta":
+                                    delta = ev.get("delta", {})
+                                    if delta.get("type") == "text_delta":
+                                        text_delta = delta.get("text", "")
+                                        if text_delta:
+                                            chunk = {
+                                                "id": resp_id_stream,
+                                                "object": "chat.completion.chunk",
+                                                "model": model_name_stream,
+                                                "created": created_ts,
+                                                "choices": [
+                                                    {
+                                                        "index": 0,
+                                                        "delta": {"role": "assistant", "content": text_delta},
+                                                        "finish_reason": None,
+                                                    }
+                                                ],
+                                            }
+                                            yield f"data: {json.dumps(chunk)}\n\n"
+                            final_msg = _to_dict(stream_obj.get_final_message())
+                            usage_info_final = map_usage(final_msg)
+                            done = {
+                                "id": final_msg.get("id", resp_id_stream),
+                                "object": "chat.completion.chunk",
+                                "model": final_msg.get("model", model_name_stream),
+                                "created": int(final_msg.get("created_at", created_ts)),
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {},
+                                        "finish_reason": "stop",
+                                    }
+                                ],
+                                "usage": usage_info_final,
+                            }
+                            yield f"data: {json.dumps(done)}\n\n"
+                            yield "data: [DONE]\n\n"
+                    except BadRequestError as e:
+                        dlog("anthropic_stream_error", _to_dict(e))
+                        err = error_response(str(e))
+                        yield f"data: {json.dumps(err)}\n\n"
+                        yield "data: [DONE]\n\n"
+
+                return StreamingResponse(event_gen_api_key_stream(), media_type="text/event-stream")
+
+            foundry_json = call_foundry_anthropic(payload, max_tokens=max_tokens, temperature=temperature)
+        else:
+            foundry_json = call_foundry_responses(prompt, max_tokens=max_tokens, temperature=temperature)
     except Exception as e:
         return JSONResponse(error_response(str(e)))
 
+    if FOUNDRY_API_KEY:
+        # Map Anthropic response
+        text_parts = []
+        content_blocks = foundry_json.get("content", [])
+        if isinstance(content_blocks, dict):
+            content_blocks = [content_blocks]
+        for c in content_blocks:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "text" and c.get("text"):
+                text_parts.append(c["text"])
+        assistant_text = "\n".join(text_parts)
+        if not assistant_text and isinstance(foundry_json.get("content"), str):
+            assistant_text = foundry_json["content"]
+        usage_info = map_usage(foundry_json)
+        model_name = foundry_json.get("model", CLAUDE_MODEL)
+        created = int(foundry_json.get("created_at", time.time()))
+        resp_id = foundry_json.get("id", "resp_local")
+        if not assistant_text:
+            dlog("assistant_text_raw_empty", foundry_json)
+        else:
+            dlog("assistant_text_raw", assistant_text)
+        # Streaming requested: re-stream a single chunk with full text
+        if stream:
+            async def event_gen_api_key():
+                chunk = {
+                    "id": resp_id,
+                    "object": "chat.completion.chunk",
+                    "model": model_name,
+                    "created": created,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": assistant_text or "(no content returned)"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+                done = {
+                    "id": resp_id,
+                    "object": "chat.completion.chunk",
+                    "model": model_name,
+                    "created": created,
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": "stop"}
+                    ],
+                    "usage": usage_info,
+                }
+                yield f"data: {json.dumps(done)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(event_gen_api_key(), media_type="text/event-stream")
+
+        # Non-stream API key response
+        return JSONResponse(
+            {
+                "id": resp_id,
+                "object": "chat.completion",
+                "model": model_name,
+                "created": created,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": assistant_text or "(no content returned)"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": usage_info,
+            }
+        )
+
     assistant_text = extract_text(foundry_json)
-    dlog("assistant_text_raw", assistant_text)
+    if not assistant_text:
+        dlog("assistant_text_raw_empty", foundry_json)
+    else:
+        dlog("assistant_text_raw", assistant_text)
     usage_info = map_usage(foundry_json)
 
     model_name = foundry_json.get("model", CLAUDE_MODEL)
@@ -354,7 +579,7 @@ async def chat_completions(request: Request):
                     )
                 first_delta["tool_calls"] = delta_tool_calls
             else:
-                first_delta["content"] = assistant_text
+                first_delta["content"] = assistant_text or "(no content returned)"
 
             chunk = {
                 "id": resp_id,
@@ -423,7 +648,7 @@ async def chat_completions(request: Request):
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": assistant_text},
+                    "message": {"role": "assistant", "content": assistant_text or "(no content returned)"},
                     "finish_reason": "stop",
                 }
             ],
@@ -439,3 +664,20 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "1234"))
     uvicorn.run("lmstudio_claude_proxy_az:app", host=host, port=port, reload=False)
+def to_anthropic_payload(messages: list) -> dict:
+    """Split system vs user/assistant and shape to Anthropic format."""
+    system_parts: list[str] = []
+    chat_msgs: list[dict] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if role == "system":
+            if isinstance(content, str):
+                system_parts.append(content)
+            else:
+                system_parts.append(str(content))
+            continue
+        text = content if isinstance(content, str) else str(content)
+        chat_msgs.append({"role": role, "content": [{"type": "text", "text": text}]})
+    system_text = "\n".join(system_parts) if system_parts else None
+    return {"system": system_text, "messages": chat_msgs}
