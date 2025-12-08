@@ -1,9 +1,9 @@
 # Agent Guide
 
-- **Purpose**: Local FastAPI proxy that exposes an LM Studio–compatible OpenAI API at `http://127.0.0.1:1234/v1` and forwards requests to Azure AI Foundry Responses API using API key (preferred) or Azure CLI auth.
-- **Key file**: `lmstudio_claude_proxy_az.py` (only source file).
-- **Endpoints**: `GET /v1/models` returns a single configured model; `POST /v1/chat/completions` supports streaming SSE and non-streaming JSON; bridges simple Void-style tool tags → OpenAI `tool_calls` (streams tool_calls as OpenAI-style deltas with index/id/arguments).
-- **Auth**: Without `FOUNDRY_API_KEY`, uses Azure CLI bearer (`az account get-access-token --scope https://ai.azure.com/.default`). With `FOUNDRY_API_KEY`, uses the Anthropic endpoint (`https://<resource>.services.ai.azure.com/anthropic/v1/messages`) via the AnthropicFoundry SDK and `api-key` (no AAD fallback). Streaming requests are served from a non-stream call and re-streamed.
+- **Purpose**: Local FastAPI proxy that exposes an OpenAI‑compatible API at `http://127.0.0.1:1234/v1` and forwards requests to Azure AI Foundry Anthropic (messages) API using an API key.
+- **Key file**: `foundry_openai_proxy.py` (only source file).
+- **Endpoints**: `GET /v1/models` returns a single configured model; `POST /v1/chat/completions` supports streaming SSE and non-streaming JSON; bridges simple tag-based tool markers → OpenAI `tool_calls` (streams tool_calls as OpenAI-style deltas with index/id/arguments).
+- **Auth**: Requires `FOUNDRY_API_KEY` and uses the Anthropic endpoint (`https://<resource>.services.ai.azure.com/anthropic/v1/messages`) via the AnthropicFoundry SDK and `api-key` (no AAD/Azure CLI path). Streaming requests are served from a non-stream call and re-streamed.
 
 ## Configuration
 - Preferred: add `.env` with `FOUNDRY_RESOURCE`, `PROJECT_NAME`, `CLAUDE_MODEL`, `API_VERSION`, `FOUNDRY_API_KEY` (env vars override `.env`; API key preferred when set). Tools are only prompted when the client provides a `tools`/`functions` list.
@@ -13,8 +13,7 @@
 
 ## Running
 - Install deps: `pip install fastapi uvicorn requests`.
-- Start: `uvicorn lmstudio_claude_proxy_az:app --host 127.0.0.1 --port 1234`.
-- Requires `az login` beforehand (and `az account set` if multiple subscriptions).
+- Start: `uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 1234`.
 
 ## Request Flow
 - Incoming OpenAI-style messages → concatenated prompt (`ROLE: content\n...ASSISTANT:`).

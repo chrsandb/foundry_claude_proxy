@@ -1,4 +1,9 @@
-# Void LM Studio Integration – Findings
+# LEGACY – Void / LM Studio Integration Notes
+
+> These notes describe historical behavior of Void / LM Studio’s OpenAI-compatible integration and are kept only for reference.
+> The proxy is now being refocused as a **generic OpenAI-compatible proxy** and no longer targets Void/LM Studio specifically.
+
+## Findings
 
 Source reviewed: https://github.com/voideditor/void (Feb 2025 snapshot), key files below.
 

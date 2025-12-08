@@ -1,5 +1,4 @@
 import os
-import subprocess
 import json
 import time
 import re
@@ -9,8 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-import requests
-from anthropic import AnthropicFoundry, BadRequestError
+from anthropic import AnthropicFoundry
 
 # ---------- Config helpers ----------
 def load_env_file(path: str = ".env") -> dict:
@@ -50,106 +48,38 @@ def dlog(label: str, data):
 
 # === CONFIG: EDIT THESE ===
 FOUNDRY_RESOURCE = _env("FOUNDRY_RESOURCE", "your-foundry-resource")          # your resource name
-PROJECT_NAME     = _env("PROJECT_NAME", "your-foundry-project")               # your Foundry project
 CLAUDE_MODEL     = _env("CLAUDE_MODEL", "claude-sonnet-4-5")                  # model or router name
-API_VERSION      = _env("API_VERSION", "2025-11-15-preview")
-FOUNDRY_API_KEY  = _env("FOUNDRY_API_KEY", "")                                # optional: API key (Anthropic endpoint)
-
-FOUNDRY_URL = (
-    f"https://{FOUNDRY_RESOURCE}.services.ai.azure.com/"
-    f"api/projects/{PROJECT_NAME}/openai/responses"
-    f"?api-version={API_VERSION}"
-)
+FOUNDRY_API_KEY  = _env("FOUNDRY_API_KEY", "")                                # required: API key (Anthropic endpoint)
 
 app = FastAPI()
 
 
-# ---------- Auth via az CLI ----------
-def get_token_via_az() -> str:
-    result = subprocess.run(
-        [
-            "az",
-            "account",
-            "get-access-token",
-            "--scope",
-            "https://ai.azure.com/.default",
-            "--query",
-            "accessToken",
-            "-o",
-            "tsv",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    token = result.stdout.strip()
-    if not token:
-        raise RuntimeError("Empty token from az CLI")
-    return token
+# ---------- Config validation ----------
+def _validate_config() -> None:
+    missing: list[str] = []
+    if not FOUNDRY_RESOURCE or FOUNDRY_RESOURCE == "your-foundry-resource":
+        missing.append("FOUNDRY_RESOURCE")
+    if not CLAUDE_MODEL or CLAUDE_MODEL == "claude-sonnet-4-5":
+        # Model can be the default name, but require it to be explicitly set for clarity.
+        pass
+    if not FOUNDRY_API_KEY:
+        missing.append("FOUNDRY_API_KEY")
+    if missing:
+        raise RuntimeError(
+            f"Missing required configuration for proxy: {', '.join(missing)}. "
+            "Set them via environment variables or a .env file."
+        )
+
+
+try:
+    _validate_config()
+except Exception as e:
+    # Fail fast with a clear message; in debug mode also print details.
+    print(f"[proxy-error] Configuration validation failed: {e}")
+    raise
 
 
 # ---------- Helper functions ----------
-def messages_to_prompt(messages, tools=None):
-    parts = []
-    if tools:
-        tool_names = [t.get("function", {}).get("name") for t in tools if t.get("type") == "function"]
-        tool_names = [n for n in tool_names if n]
-        if tool_names:
-            parts.append(
-                "SYSTEM: If tools are needed, respond ONLY with <tool_call>{\"name\":\"tool_name\",\"arguments\":{...}}</tool_call> "
-                "blocks (no extra prose). Supported tools: "
-                + ", ".join(tool_names)
-                + ". Use read_file by providing an absolute file URI/path under the user's workspace."
-            )
-    for m in messages:
-        role = m.get("role", "user")
-        content = m.get("content", "")
-        parts.append(f"{role.upper()}: {content}")
-    parts.append("ASSISTANT:")
-    return "\n".join(parts)
-
-
-def call_foundry_responses(prompt, max_tokens=None, temperature=None):
-    payload = {"model": CLAUDE_MODEL, "input": prompt}
-
-    if max_tokens is not None:
-        payload["max_output_tokens"] = max_tokens
-    if temperature is not None:
-        payload["temperature"] = temperature
-
-    def _headers_api_key():
-        return {
-            "api-key": FOUNDRY_API_KEY,
-            "Ocp-Apim-Subscription-Key": FOUNDRY_API_KEY,
-            "Content-Type": "application/json",
-        }
-
-    def _headers_aad():
-        token = get_token_via_az()
-        return {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-
-    def _post(headers, mode):
-        dlog("foundry_payload", {"payload": payload, "auth_mode": mode})
-        resp = requests.post(FOUNDRY_URL, headers=headers, json=payload)
-        dlog("foundry_http", {"auth_mode": mode, "status": resp.status_code, "text_preview": resp.text[:500]})
-        return resp
-
-    # Auth: Responses API supports AAD; API keys are not supported here.
-    resp = _post(_headers_aad(), "aad")
-    resp.raise_for_status()
-
-    try:
-        data = resp.json()
-    except Exception:
-        dlog("foundry_response_parse_error", resp.text)
-        raise
-    dlog("foundry_response", {"model": data.get("model"), "id": data.get("id"), "usage": data.get("usage")})
-    return data
-
-
 def _to_dict(obj):
     if isinstance(obj, dict):
         return obj
@@ -162,39 +92,6 @@ def _to_dict(obj):
             return obj.__dict__
         except Exception:
             return {}
-
-
-def extract_text(foundry_json: dict) -> str:
-    # Handle output as list or dict, plus a few fallbacks.
-    try:
-        output = foundry_json.get("output", [])
-        if isinstance(output, dict):
-            output = [output]
-        for item in output:
-            if item.get("type") == "message":
-                for c in item.get("content", []):
-                    if c.get("type") in ("output_text", "text"):
-                        if c.get("text"):
-                            return c["text"]
-            # Some responses may have direct text
-            if item.get("text"):
-                return item.get("text")
-        # Fallbacks
-        if foundry_json.get("output_text"):
-            return foundry_json["output_text"]
-        if foundry_json.get("response_text"):
-            return foundry_json["response_text"]
-        # OpenAI-style fallback
-        choices = foundry_json.get("choices")
-        if isinstance(choices, list) and choices:
-            msg = choices[0].get("message") or {}
-            if isinstance(msg, dict):
-                content = msg.get("content")
-                if isinstance(content, str):
-                    return content
-    except Exception:
-        pass
-    return ""
 
 
 def call_foundry_anthropic(messages, max_tokens=None, temperature=None):
@@ -252,9 +149,14 @@ def error_response(text: str):
 
 def extract_tool_calls_from_text(text: str, tools: list) -> tuple[list, str]:
     """
-    Bridge: parse Void-style tags like
-      <read_file> <path>...</path> </read_file>
+    Bridge: parse simple tool markers (tags and Anthropic-style tool_use arrays)
     and convert them into OpenAI-style tool_calls.
+
+    Supported patterns:
+      - <read_file><path>...</path></read_file>
+      - <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+      - Anthropic-style list:
+        [{'type': 'tool_use', 'id': '...', 'name': '...', 'input': {...}}, ...]
 
     Currently supports: read_file
     Returns (tool_calls, remaining_text).
@@ -272,7 +174,7 @@ def extract_tool_calls_from_text(text: str, tools: list) -> tuple[list, str]:
                 available.add(name)
 
     def normalize_args(name: str, arguments: dict) -> dict:
-        # Void expects read_file -> {"uri": "<path>"} (string), not {"path": ...}
+        # Normalize read_file arguments to {"uri": "<path>"} (string), not {"path": ...}
         if name == "read_file":
             path_val = arguments.get("path") or arguments.get("uri")
             if path_val:
@@ -351,7 +253,7 @@ def extract_tool_calls_from_text(text: str, tools: list) -> tuple[list, str]:
     return tool_calls, remaining.strip()
 
 
-# ---------- LM Studio–compatible endpoints ----------
+# ---------- OpenAI-compatible endpoints ----------
 @app.get("/v1/models")
 async def list_models():
     return JSONResponse(
@@ -364,6 +266,83 @@ async def list_models():
                 }
             ],
             "object": "list",
+        }
+    )
+
+
+@app.post("/v1/completions")
+async def completions(request: Request):
+    """
+    Basic support for the legacy /v1/completions endpoint.
+
+    Maps:
+    - prompt (str) -> single user message
+    - max_tokens, temperature -> Anthropic parameters
+    and returns an OpenAI-style text completion response.
+    """
+    try:
+        body = await request.json()
+    except Exception as e:
+        return JSONResponse(error_response(f"Invalid JSON: {e}"))
+
+    prompt = body.get("prompt")
+    if prompt is None:
+        return JSONResponse(error_response("No 'prompt' field provided"))
+
+    if isinstance(prompt, list):
+        prompt = "".join(str(p) for p in prompt)
+    elif not isinstance(prompt, str):
+        prompt = str(prompt)
+
+    max_tokens = body.get("max_tokens")
+    temperature = body.get("temperature")
+
+    messages = [{"role": "user", "content": prompt}]
+
+    dlog(
+        "incoming_request_completions",
+        {"prompt_preview": prompt[:128] if isinstance(prompt, str) else str(prompt)[:128], "max_tokens": max_tokens, "temperature": temperature},
+    )
+
+    try:
+        payload = to_anthropic_payload(messages)
+        foundry_json = call_foundry_anthropic(payload, max_tokens=max_tokens, temperature=temperature)
+    except Exception as e:
+        return JSONResponse(error_response(str(e)))
+
+    # Map Anthropic response -> completion.text
+    text_parts: list[str] = []
+    content_blocks = foundry_json.get("content", [])
+    if isinstance(content_blocks, dict):
+        content_blocks = [content_blocks]
+    for c in content_blocks:
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") == "text" and c.get("text"):
+            text_parts.append(c["text"])
+    completion_text = "\n".join(text_parts)
+    if not completion_text and isinstance(foundry_json.get("content"), str):
+        completion_text = foundry_json["content"]
+
+    usage_info = map_usage(foundry_json)
+    model_name = foundry_json.get("model", CLAUDE_MODEL)
+    created = int(foundry_json.get("created_at", time.time()))
+    resp_id = foundry_json.get("id", "resp_local")
+
+    return JSONResponse(
+        {
+            "id": resp_id,
+            "object": "text_completion",
+            "model": model_name,
+            "created": created,
+            "choices": [
+                {
+                    "index": 0,
+                    "text": completion_text or "(no content returned)",
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": usage_info,
         }
     )
 
@@ -384,173 +363,41 @@ async def chat_completions(request: Request):
     tool_defs = body.get("tools") or body.get("functions") or []
     has_tools = bool(tool_defs)
 
-    prompt = messages_to_prompt(messages, tools=tool_defs if has_tools else None)
-    dlog("incoming_request", {"stream": stream, "has_tools": has_tools, "tools_keys": [t.get('function', {}).get('name') for t in tool_defs], "prompt": prompt})
+    dlog(
+        "incoming_request_chat",
+        {"stream": stream, "has_tools": has_tools, "tools_keys": [t.get("function", {}).get("name") for t in tool_defs]},
+    )
 
     max_tokens = body.get("max_tokens")
     temperature = body.get("temperature")
 
     try:
-        if FOUNDRY_API_KEY:
-            # Anthropic endpoint with API key
-            payload = to_anthropic_payload(messages)
-            if stream:
-                base_url = f"https://{FOUNDRY_RESOURCE}.services.ai.azure.com/anthropic/"
-                client = AnthropicFoundry(api_key=FOUNDRY_API_KEY, base_url=base_url)
-
-                async def event_gen_api_key_stream():
-                    model_name_stream = CLAUDE_MODEL
-                    created_ts = int(time.time())
-                    resp_id_stream = "resp_stream"
-                    try:
-                        with client.messages.stream(
-                            model=CLAUDE_MODEL,
-                            system=payload.get("system"),
-                            messages=payload.get("messages"),
-                            max_tokens=max_tokens or 1024,
-                            **({"temperature": temperature} if temperature is not None else {}),
-                        ) as stream_obj:
-                            for event in stream_obj:
-                                ev = _to_dict(event)
-                                etype = ev.get("type")
-                                if etype == "message_start":
-                                    msg = ev.get("message", {})
-                                    resp_id_stream = msg.get("id", resp_id_stream)
-                                    model_name_stream = msg.get("model", model_name_stream)
-                                    created_ts = int(msg.get("created_at", created_ts))
-                                elif etype == "content_block_delta":
-                                    delta = ev.get("delta", {})
-                                    if delta.get("type") == "text_delta":
-                                        text_delta = delta.get("text", "")
-                                        if text_delta:
-                                            chunk = {
-                                                "id": resp_id_stream,
-                                                "object": "chat.completion.chunk",
-                                                "model": model_name_stream,
-                                                "created": created_ts,
-                                                "choices": [
-                                                    {
-                                                        "index": 0,
-                                                        "delta": {"role": "assistant", "content": text_delta},
-                                                        "finish_reason": None,
-                                                    }
-                                                ],
-                                            }
-                                            yield f"data: {json.dumps(chunk)}\n\n"
-                            final_msg = _to_dict(stream_obj.get_final_message())
-                            usage_info_final = map_usage(final_msg)
-                            done = {
-                                "id": final_msg.get("id", resp_id_stream),
-                                "object": "chat.completion.chunk",
-                                "model": final_msg.get("model", model_name_stream),
-                                "created": int(final_msg.get("created_at", created_ts)),
-                                "choices": [
-                                    {
-                                        "index": 0,
-                                        "delta": {},
-                                        "finish_reason": "stop",
-                                    }
-                                ],
-                                "usage": usage_info_final,
-                            }
-                            yield f"data: {json.dumps(done)}\n\n"
-                            yield "data: [DONE]\n\n"
-                    except BadRequestError as e:
-                        dlog("anthropic_stream_error", _to_dict(e))
-                        err = error_response(str(e))
-                        yield f"data: {json.dumps(err)}\n\n"
-                        yield "data: [DONE]\n\n"
-
-                return StreamingResponse(event_gen_api_key_stream(), media_type="text/event-stream")
-
-            foundry_json = call_foundry_anthropic(payload, max_tokens=max_tokens, temperature=temperature)
-        else:
-            foundry_json = call_foundry_responses(prompt, max_tokens=max_tokens, temperature=temperature)
+        payload = to_anthropic_payload(messages)
+        foundry_json = call_foundry_anthropic(payload, max_tokens=max_tokens, temperature=temperature)
     except Exception as e:
         return JSONResponse(error_response(str(e)))
 
-    if FOUNDRY_API_KEY:
-        # Map Anthropic response
-        text_parts = []
-        content_blocks = foundry_json.get("content", [])
-        if isinstance(content_blocks, dict):
-            content_blocks = [content_blocks]
-        for c in content_blocks:
-            if not isinstance(c, dict):
-                continue
-            if c.get("type") == "text" and c.get("text"):
-                text_parts.append(c["text"])
-        assistant_text = "\n".join(text_parts)
-        if not assistant_text and isinstance(foundry_json.get("content"), str):
-            assistant_text = foundry_json["content"]
-        usage_info = map_usage(foundry_json)
-        model_name = foundry_json.get("model", CLAUDE_MODEL)
-        created = int(foundry_json.get("created_at", time.time()))
-        resp_id = foundry_json.get("id", "resp_local")
-        if not assistant_text:
-            dlog("assistant_text_raw_empty", foundry_json)
-        else:
-            dlog("assistant_text_raw", assistant_text)
-        # Streaming requested: re-stream a single chunk with full text
-        if stream:
-            async def event_gen_api_key():
-                chunk = {
-                    "id": resp_id,
-                    "object": "chat.completion.chunk",
-                    "model": model_name,
-                    "created": created,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"role": "assistant", "content": assistant_text or "(no content returned)"},
-                            "finish_reason": None,
-                        }
-                    ],
-                }
-                yield f"data: {json.dumps(chunk)}\n\n"
-                done = {
-                    "id": resp_id,
-                    "object": "chat.completion.chunk",
-                    "model": model_name,
-                    "created": created,
-                    "choices": [
-                        {"index": 0, "delta": {}, "finish_reason": "stop"}
-                    ],
-                    "usage": usage_info,
-                }
-                yield f"data: {json.dumps(done)}\n\n"
-                yield "data: [DONE]\n\n"
-
-            return StreamingResponse(event_gen_api_key(), media_type="text/event-stream")
-
-        # Non-stream API key response
-        return JSONResponse(
-            {
-                "id": resp_id,
-                "object": "chat.completion",
-                "model": model_name,
-                "created": created,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": assistant_text or "(no content returned)"},
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": usage_info,
-            }
-        )
-
-    assistant_text = extract_text(foundry_json)
+    # Map Anthropic response (non-stream)
+    text_parts: list[str] = []
+    content_blocks = foundry_json.get("content", [])
+    if isinstance(content_blocks, dict):
+        content_blocks = [content_blocks]
+    for c in content_blocks:
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") == "text" and c.get("text"):
+            text_parts.append(c["text"])
+    assistant_text = "\n".join(text_parts)
+    if not assistant_text and isinstance(foundry_json.get("content"), str):
+        assistant_text = foundry_json["content"]
+    usage_info = map_usage(foundry_json)
+    model_name = foundry_json.get("model", CLAUDE_MODEL)
+    created = int(foundry_json.get("created_at", time.time()))
+    resp_id = foundry_json.get("id", "resp_local")
     if not assistant_text:
         dlog("assistant_text_raw_empty", foundry_json)
     else:
         dlog("assistant_text_raw", assistant_text)
-    usage_info = map_usage(foundry_json)
-
-    model_name = foundry_json.get("model", CLAUDE_MODEL)
-    created = int(foundry_json.get("created_at", time.time()))
-    resp_id = foundry_json.get("id", "resp_local")
 
     # ---------- TOOL BRIDGE (shared for stream / non-stream) ----------
     tool_calls = []
@@ -558,7 +405,7 @@ async def chat_completions(request: Request):
     if has_tools:
         tool_calls, remaining_text = extract_tool_calls_from_text(assistant_text, tool_defs)
 
-    # ---------- STREAMING (for LM Studio / Void chat) ----------
+    # ---------- STREAMING (SSE, OpenAI-style) ----------
     if stream:
         async def event_gen():
             first_delta = {"role": "assistant"}
@@ -615,7 +462,7 @@ async def chat_completions(request: Request):
         return StreamingResponse(event_gen(), media_type="text/event-stream")
 
     # ---------- NON-STREAMING ----------
-    # If tools are present, try to bridge Void-style tags -> tool_calls
+    # If tools are present, try to bridge tag-based tool markers -> tool_calls
     if has_tools and tool_calls:
         return JSONResponse(
             {
@@ -658,12 +505,12 @@ async def chat_completions(request: Request):
 
 
 if __name__ == "__main__":
-    # Convenience for local runs: python lmstudio_claude_proxy_az.py --proxy-debug
+    # Convenience for local runs: python foundry_openai_proxy.py --proxy-debug
     import uvicorn
 
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "1234"))
-    uvicorn.run("lmstudio_claude_proxy_az:app", host=host, port=port, reload=False)
+    uvicorn.run("foundry_openai_proxy:app", host=host, port=port, reload=False)
 def to_anthropic_payload(messages: list) -> dict:
     """Split system vs user/assistant and shape to Anthropic format."""
     system_parts: list[str] = []
