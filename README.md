@@ -23,11 +23,12 @@ This proxy uses a single auth mode:
 
 ### Install
 
-Clone the repo and create a virtualenv:
+Clone the repo and check out the `generic-openai-foundry-proxy` branch (until it is merged to `main`), then create a virtualenv:
 
 ```shell
 git clone https://github.com/chrsandb/foundry_claude_proxy.git
 cd foundry_claude_proxy
+git checkout generic-openai-foundry-proxy
 
 python3 -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
