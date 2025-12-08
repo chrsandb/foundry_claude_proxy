@@ -8,12 +8,13 @@ This file captures manual test scenarios for the Azure Foundry Claude Proxy (Ope
 
 - Start the proxy:
   ```shell
-  FOUNDRY_API_KEY=... uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 1234
+  uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 18000
   ```
 - Send a non‑streaming request:
   ```shell
-  curl -s http://127.0.0.1:1234/v1/chat/completions \
+  curl -s http://127.0.0.1:18000/v1/chat/completions \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer myresource:foundry-key-123" \
     -d '{
           "model": "claude-sonnet-4-5",
           "messages": [{"role": "user", "content": "Say OK"}]
@@ -27,10 +28,11 @@ This file captures manual test scenarios for the Azure Foundry Claude Proxy (Ope
 
 ### 1.2 Streaming chat
 
-- With the proxy running, send:
+-- With the proxy running, send:
   ```shell
-  curl -N http://127.0.0.1:1234/v1/chat/completions \
+  curl -N http://127.0.0.1:18000/v1/chat/completions \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer myresource:foundry-key-123" \
     -d '{
           "model": "claude-sonnet-4-5",
           "stream": true,
@@ -48,8 +50,9 @@ This file captures manual test scenarios for the Azure Foundry Claude Proxy (Ope
 
 - Send:
   ```shell
-  curl -s http://127.0.0.1:1234/v1/completions \
+  curl -s http://127.0.0.1:18000/v1/completions \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer myresource:foundry-key-123" \
     -d '{
           "model": "claude-sonnet-4-5",
           "prompt": "Say OK"
@@ -100,23 +103,17 @@ Assume the client declares a `read_file` tool in `tools` or `functions`.
 
 ## 4. Error handling and config
 
-### 4.1 Missing config
+### 4.1 Missing / invalid per-request config
 
-- Unset `FOUNDRY_API_KEY` and start the proxy:
-  ```shell
-  uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 1234
-  ```
+- Start the proxy without any Foundry-related env (none are needed).  
+- Send a chat request without an `Authorization` header or without a `model` field.
 - Verify:
-  - Process exits on startup.
-  - stderr contains a message like:
-    ```text
-    [proxy-error] Configuration validation failed: Missing required configuration for proxy: FOUNDRY_API_KEY...
-    ```
+  - Proxy returns HTTP 200 with `object: "chat.completion"` containing an error message from `error_response(...)` in `choices[0].message.content`.
+  - The error text clearly indicates which parts of the Foundry configuration are missing (API key, resource, or model).
 
 ### 4.2 Upstream errors
 
-- Temporarily set an invalid `FOUNDRY_API_KEY` and send a chat request.
+- Use a syntactically valid but incorrect Foundry key in `Authorization: Bearer resource:bad-key` and send a chat request.
 - Verify:
-  - Proxy returns HTTP 200 with `object: "chat.completion"` containing a faux error message from `error_response(...)` in `choices[0].message.content`.
+  - Proxy returns HTTP 200 with `object: "chat.completion"` containing an error message from `error_response(...)` in `choices[0].message.content`.
   - When `PROXY_DEBUG=1`, logs show `foundry_response` with details from Anthropic.
-

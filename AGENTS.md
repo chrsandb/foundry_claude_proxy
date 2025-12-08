@@ -1,6 +1,6 @@
 # Agent Guide
 
-- **Purpose**: Local FastAPI proxy that exposes an OpenAI‑compatible API at `http://127.0.0.1:1234/v1` and forwards requests to Azure AI Foundry Anthropic (messages) API using an API key.
+- **Purpose**: Local FastAPI proxy that exposes an OpenAI‑compatible API at `http://127.0.0.1:18000/v1` and forwards requests to Azure AI Foundry Anthropic (messages) API using an API key.
 - **Key file**: `foundry_openai_proxy.py` (only source file).
 - **Endpoints**: `GET /v1/models` returns a single configured model; `POST /v1/chat/completions` supports streaming SSE and non-streaming JSON; bridges simple tag-based tool markers → OpenAI `tool_calls` (streams tool_calls as OpenAI-style deltas with index/id/arguments).
 - **Auth**: Requires `FOUNDRY_API_KEY` and uses the Anthropic endpoint (`https://<resource>.services.ai.azure.com/anthropic/v1/messages`) via the AnthropicFoundry SDK and `api-key` (no AAD/Azure CLI path). Streaming requests are served from a non-stream call and re-streamed.
@@ -13,7 +13,7 @@
 
 ## Running
 - Install deps: `pip install fastapi uvicorn requests`.
-- Start: `uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 1234`.
+- Start: `uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 18000`.
 
 ## Request Flow
 - Incoming OpenAI-style messages → concatenated prompt (`ROLE: content\n...ASSISTANT:`).
@@ -34,7 +34,7 @@
 - Hard-coded config; changing models requires editing the file.
 
 ## Quick Tests
-- Non-stream: `curl -s http://127.0.0.1:1234/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Say OK"}]}'`.
+- Non-stream: `curl -s http://127.0.0.1:18000/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"Say OK"}]}'`.
 - Stream: same body with `"stream": true`; expect SSE chunks ending with `data: [DONE]`.
 
 ## Suggestions (if asked to extend)

@@ -2,7 +2,7 @@
 
 Use Claude Sonnet 4.5 (or any Azure AI Foundry model) from OpenAI SDKs and other OpenAI‑compatible clients via a local OpenAI‑style API:
 
-- Local endpoint: `http://127.0.0.1:1234/v1`
+- Local endpoint: `http://127.0.0.1:18000/v1`
 - Implemented routes: `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/completions`
 - Features: streaming + non‑stream chat, basic `tool_calls` bridge (`read_file`), OpenAI‑compatible JSON/SSE responses
 
@@ -35,28 +35,44 @@ source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Base Configuration
+### Configuration
 
-Create `.env` (or use environment variables):
+The proxy does not store any central Foundry configuration. All upstream Foundry settings are derived per request from:
 
-```text
-FOUNDRY_RESOURCE=myresource          # Azure AI Foundry resource name
-CLAUDE_MODEL=claude-sonnet-4-5       # Model or deployment name
-FOUNDRY_API_KEY=<your-foundry-api-key>
-```
+- The logical `apiKey` (from `Authorization: Bearer <token>`), and  
+- The logical `model` field in the request body.
 
-All of these must be set via environment variables or `.env`. On startup, the proxy validates configuration and fails fast if required values are missing.
+To talk to Azure AI Foundry, you must know:
+
+- Your Foundry **resource name** (call it `<RESOURCE_NAME>`), which appears in the endpoint URL in the Azure portal, e.g.:  
+  `https://<RESOURCE_NAME>.services.ai.azure.com/...`  
+- A **Foundry API key** for that resource with access to Claude (`<FOUNDRY_API_KEY>`).
+
+You then encode those into `apiKey` and/or `model`:
+
+- Recommended simplest form (resource in `apiKey`):  
+  - Header: `Authorization: Bearer <RESOURCE_NAME>:<FOUNDRY_API_KEY>`  
+  - Body: `"model": "claude-sonnet-4-5"`
+- Alternative (resource in `model`):  
+  - Header: `Authorization: Bearer <FOUNDRY_API_KEY>`  
+  - Body: `"model": "<RESOURCE_NAME>/claude-sonnet-4-5"`
+
+You may still use environment variables for:
+
+- `PROXY_DEBUG=1` to enable debug logging.  
+- `DEV_DEFAULT_LOGICAL_API_KEY` for local development when your client cannot set `Authorization`.  
+- `HOST` / `PORT` if you run via `python foundry_openai_proxy.py`.
 
 ### Run
 
 ```shell
-uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 1234
+uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 18000
 ```
 
 Or with debug logging:
 
 ```shell
-PROXY_DEBUG=1 uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 1234
+PROXY_DEBUG=1 uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 18000
 # or
 python foundry_openai_proxy.py --proxy-debug
 ```
@@ -64,7 +80,7 @@ python foundry_openai_proxy.py --proxy-debug
 Local endpoint:
 
 ```text
-http://127.0.0.1:1234/v1
+http://127.0.0.1:18000/v1
 ```
 
 ## How it works
@@ -107,14 +123,15 @@ via the `AnthropicFoundry` SDK.
 Start the proxy:
 
 ```shell
-FOUNDRY_API_KEY=... uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 1234
+uvicorn foundry_openai_proxy:app --host 127.0.0.1 --port 18000
 ```
 
 Non‑stream chat:
 
 ```shell
-curl -s http://127.0.0.1:1234/v1/chat/completions \
+curl -s http://127.0.0.1:18000/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer myresource:foundry-key-123" \
   -d '{
         "model": "claude-sonnet-4-5",
         "messages": [{"role": "user", "content": "Say OK"}]
@@ -124,8 +141,9 @@ curl -s http://127.0.0.1:1234/v1/chat/completions \
 Streaming chat:
 
 ```shell
-curl -N http://127.0.0.1:1234/v1/chat/completions \
+curl -N http://127.0.0.1:18000/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer myresource:foundry-key-123" \
   -d '{
         "model": "claude-sonnet-4-5",
         "stream": true,
@@ -144,8 +162,9 @@ data: [DONE]
 Legacy completions:
 
 ```shell
-curl -s http://127.0.0.1:1234/v1/completions \
+curl -s http://127.0.0.1:18000/v1/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer myresource:foundry-key-123" \
   -d '{
         "model": "claude-sonnet-4-5",
         "prompt": "Say OK"
@@ -183,11 +202,130 @@ curl -s http://127.0.0.1:1234/v1/completions \
 
 ---
 
+## Per-client Foundry configuration via apiKey + model
+
+The proxy derives the upstream Foundry `resource`, `model`, and `api_key` from the logical `apiKey` and `model` that OpenAI-compatible clients already expose. There is no central Foundry config; the client must encode everything needed into these two fields.
+
+### Logical `apiKey` formats
+
+- **Plain key mode**  
+  - `apiKey` is just the Foundry API key.  
+  - The Foundry resource must then be encoded in the `model` (see below) so the proxy can route correctly.
+
+- **Structured mode**  
+  - `apiKey = "<foundry_resource>:<foundry_api_key>"`  
+  - Example: `myresource:foundry-key-123`  
+  - The proxy splits this into:
+    - `foundry_resource = "myresource"`
+    - `foundry_api_key = "foundry-key-123"`
+
+### Logical `model` behavior
+
+- **Plain model**  
+  - `model` is treated as the Foundry model/deployment name, e.g. `"claude-sonnet-4-5"`.
+
+- **Structured model**  
+  - `model = "<foundry_resource>/<foundry_model>"`  
+  - Example: `"myresource/claude-sonnet-4-5"`  
+  - The proxy decodes this as:
+    - `foundry_resource_override = "myresource"`
+    - `foundry_model = "claude-sonnet-4-5"`
+
+### Precedence and validation
+
+For each request, the proxy uses:
+
+- API key:
+  - From structured `apiKey` (`resource:key`) if present.  
+  - Else from plain `apiKey` (treated as the Foundry key).
+- Resource:
+  - From structured `apiKey` if present.  
+  - Else from structured `model` (`resource/model`) if present.
+- Model:
+  - From structured `model` if present.  
+  - Else from the raw `model` field.
+
+If the proxy cannot derive a complete configuration (missing resource/key/model), it returns an OpenAI-style error payload explaining what is missing.
+
+For local development where your client cannot set headers, you can define `DEV_DEFAULT_LOGICAL_API_KEY` so that the proxy has a logical `apiKey` even when `Authorization` is absent.
+
+### VS Code Copilot `customOAIModels` examples
+
+Example config with resource encoded in `model` and a plain Foundry key:
+
+```json
+"github.copilot.chat.customOAIModels": [
+  {
+    "id": "foundry-claude",
+    "model": "myresource/claude-sonnet-4-5",
+    "apiKey": "FOUNDry-KEY-123",
+    "baseUrl": "http://127.0.0.1:18000/v1"
+  }
+]
+```
+
+Example structured `apiKey` per client (resource + key encoded together):
+
+```json
+"github.copilot.chat.customOAIModels": [
+  {
+    "id": "foundry-tenant-a",
+    "model": "claude-sonnet-4-5",
+    "apiKey": "myresource-a:foundry-key-a",
+    "baseUrl": "http://127.0.0.1:18000/v1"
+  }
+]
+```
+
+Example structured `model` (resource + model encoded in the model field):
+
+```json
+"github.copilot.chat.customOAIModels": [
+  {
+    "id": "foundry-tenant-b",
+    "model": "myresource-b/claude-sonnet-4-5",
+    "apiKey": "foundry-key-b",
+    "baseUrl": "http://127.0.0.1:18000/v1"
+  }
+]
+```
+
+In all cases Copilot only needs `baseUrl`, `apiKey`, and `model`; the proxy handles mapping to Foundry.
+
+### Continue extension `config.yaml` examples
+
+Example `models` block for Continue’s OpenAI-compatible provider:
+
+```yaml
+models:
+  - title: "Foundry (plain key + resource in model)"
+    provider: "openai"
+    model: "myresource/claude-sonnet-4-5"
+    apiKey: "FOUNDry-KEY-123"
+    baseUrl: "http://127.0.0.1:18000/v1"
+
+  - title: "Foundry (structured apiKey)"
+    provider: "openai"
+    model: "claude-sonnet-4-5"
+    apiKey: "myresource-a:foundry-key-a"
+    baseUrl: "http://127.0.0.1:18000/v1"
+
+  - title: "Foundry (structured model)"
+    provider: "openai"
+    model: "myresource-b/claude-sonnet-4-5"
+    apiKey: "foundry-key-b"
+    baseUrl: "http://127.0.0.1:18000/v1"
+```
+
+Each logical Continue model (`title`) uses only `baseUrl`, `apiKey`, and `model`, and the proxy routes to the appropriate Foundry resource/model based on the encoding rules above.
+
+---
+
 ## Troubleshooting
 
 - **401/403/404 from Foundry**  
-  - Check `FOUNDRY_RESOURCE`, `CLAUDE_MODEL`, and your Foundry permissions.  
-  - Ensure the API key is valid and associated with the correct Foundry resource.
+  - Check that the Foundry resource name you encode (either as the left side of `apiKey = "resource:key"` or as the `resource/` prefix in `model`) matches the resource name from the Azure portal endpoint URL.  
+  - Ensure the API key is valid for that resource and has access to the Anthropic/Claude deployment you are calling.
 
 - **Anthropic errors**  
   - Look for `foundry_response` in debug output.  
@@ -197,7 +335,7 @@ curl -s http://127.0.0.1:1234/v1/completions \
 
 ## Quick Reference
 
-- Base URL: `http://127.0.0.1:1234/v1`
+- Base URL: `http://127.0.0.1:18000/v1`
 - Models: `GET /v1/models`
 - Chat: `POST /v1/chat/completions` (stream or non‑stream)
 - Legacy text: `POST /v1/completions`
