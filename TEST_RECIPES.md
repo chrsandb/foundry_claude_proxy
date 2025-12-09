@@ -101,6 +101,26 @@ Assume the client declares a `read_file` tool in `tools` or `functions`.
   - Proxy parses the list into `tool_calls` and clears the assistant text for that message.
   - `finish_reason` is `"tool_calls"`.
 
+### 3.4 write_file tag
+
+- Have the model emit:
+  ```text
+  <write_file><path>/abs/path/to/file.txt</path><content>Hello</content></write_file>
+  ```
+- Verify:
+  - `tool_calls[0].function.name` is `write_file`.
+  - Arguments JSON parses to `{"uri": "/abs/path/to/file.txt", "contents": "Hello"}`.
+
+### 3.5 search tag
+
+- Have the model emit:
+  ```text
+  <search><query>important terms</query></search>
+  ```
+- Verify:
+  - `tool_calls[0].function.name` is `search`.
+  - Arguments JSON parses to `{"query": "important terms"}`.
+
 ## 4. Error handling and config
 
 ### 4.1 Missing / invalid per-request config
@@ -117,3 +137,48 @@ Assume the client declares a `read_file` tool in `tools` or `functions`.
 - Verify:
   - Proxy returns HTTP 200 with `object: "chat.completion"` containing an error message from `error_response(...)` in `choices[0].message.content`.
   - When `PROXY_DEBUG=1`, logs show `foundry_response` with details from Anthropic.
+
+## 5. Embeddings
+
+### 5.1 Successful embeddings (if deployment exists)
+
+- Start the proxy and send:
+  ```shell
+  curl -s http://127.0.0.1:18000/v1/embeddings \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer myresource:foundry-key-123" \
+    -d '{
+          "model": "text-embedding-3-large",
+          "input": "embedding me"
+        }'
+  ```
+- Verify:
+  - HTTP 200.
+  - Response `object` is `list`.
+  - `data[0].object` is `embedding` and has a non-empty `embedding` array.
+  - `usage` includes `prompt_tokens` and `total_tokens`.
+
+### 5.2 Embeddings not supported
+
+- Point to a resource/model that does not have an embeddings deployment.
+- Verify:
+  - HTTP 400.
+  - Response `error.type` is `not_supported_error` and message explains embeddings are unavailable for the resource/model.
+
+## 6. Moderations
+
+### 6.1 Moderations unsupported
+
+- Send:
+  ```shell
+  curl -s http://127.0.0.1:18000/v1/moderations \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer myresource:foundry-key-123" \
+    -d '{
+          "model": "text-moderation-latest",
+          "input": "test content"
+        }'
+  ```
+- Verify:
+  - HTTP 400.
+  - Response has `error.type` of `not_supported_error` and message explains moderations are not supported by this proxy/Foundry.

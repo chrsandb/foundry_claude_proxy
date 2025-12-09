@@ -2,7 +2,6 @@
 
 > NOTE: This file is for local planning only and **must not be committed** to git.
 
-## Progress
+## Status
 
-- [ ] (no active items)
-
+Plan cleared. Ready for new planning.

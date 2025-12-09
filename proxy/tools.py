@@ -13,11 +13,15 @@ def extract_tool_calls_from_text(text: str, tools: list) -> Tuple[List[Dict[str,
 
     Supported patterns:
       - <read_file><path>...</path></read_file>
+      - <write_file><path>...</path><content>...</content></write_file>
+      - <search><query>...</query></search>
       - <tool_call>{"name": "...", "arguments": {...}}</tool_call>
       - Anthropic-style list:
         [{'type': 'tool_use', 'id': '...', 'name': '...', 'input': {...}}, ...]
 
-    Currently supports: read_file
+    Supported tools: read_file (normalizes to {"uri": path}),
+                     write_file (normalizes to {"uri": path, "contents": ...}),
+                     search (normalizes to {"query": ...}).
     Returns (tool_calls, remaining_text).
     """
     tool_calls: list[dict] = []
@@ -38,6 +42,19 @@ def extract_tool_calls_from_text(text: str, tools: list) -> Tuple[List[Dict[str,
             path_val = arguments.get("path") or arguments.get("uri")
             if path_val:
                 return {"uri": path_val}
+        if name == "write_file":
+            path_val = arguments.get("path") or arguments.get("uri")
+            contents = arguments.get("contents") or arguments.get("content") or arguments.get("text")
+            result = {}
+            if path_val:
+                result["uri"] = path_val
+            if contents is not None:
+                result["contents"] = contents
+            return result if result else arguments
+        if name == "search":
+            query_val = arguments.get("query") or arguments.get("q")
+            if query_val:
+                return {"query": query_val}
         return arguments
 
     def add_call(name: str, arguments: dict):
@@ -68,6 +85,39 @@ def extract_tool_calls_from_text(text: str, tools: list) -> Tuple[List[Dict[str,
             remaining = pattern.sub("", remaining)
         # Drop any stray open/close tags that slipped through
         remaining = re.sub(r"</?read_file>", "", remaining, flags=re.IGNORECASE)
+
+    # --- write_file ---
+    if "write_file" in available:
+        pattern = re.compile(
+            r"<write_file>\s*<path>(.*?)</path>\s*<content>(.*?)</content>\s*</write_file>",
+            re.DOTALL | re.IGNORECASE,
+        )
+        matches = list(pattern.finditer(remaining))
+        if matches:
+            for m in matches:
+                path = (m.group(1) or "").strip()
+                content = (m.group(2) or "").strip()
+                if not path:
+                    continue
+                add_call("write_file", {"path": path, "content": content})
+            remaining = pattern.sub("", remaining)
+        remaining = re.sub(r"</?write_file>", "", remaining, flags=re.IGNORECASE)
+
+    # --- search ---
+    if "search" in available:
+        pattern = re.compile(
+            r"<search>\s*<query>(.*?)</query>\s*</search>",
+            re.DOTALL | re.IGNORECASE,
+        )
+        matches = list(pattern.finditer(remaining))
+        if matches:
+            for m in matches:
+                query = m.group(1).strip()
+                if not query:
+                    continue
+                add_call("search", {"query": query})
+            remaining = pattern.sub("", remaining)
+        remaining = re.sub(r"</?search>", "", remaining, flags=re.IGNORECASE)
 
     # --- generic <tool_call> JSON blocks ---
     # e.g., <tool_call>{"name": "read_file", "arguments": {"path": "/tmp/a"}}</tool_call>
@@ -108,5 +158,3 @@ def extract_tool_calls_from_text(text: str, tools: list) -> Tuple[List[Dict[str,
 
     dlog("tool_calls_extracted", {"found": tool_calls, "remaining": remaining.strip()})
     return tool_calls, remaining.strip()
-
-

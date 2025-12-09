@@ -43,3 +43,6 @@
 - True incremental streaming instead of single chunk.
 - Broaden tool tag parsing and allow streaming tool responses.
 - Add logging/metrics and optional Dockerfile/service definitions.
+
+## Operational Notes
+- Always track status in planning files (PLAN.md, ROADMAP.md, etc.): mark items as completed when done, and note partial/in-progress work with remaining TODOs so readers can see current state at a glance.

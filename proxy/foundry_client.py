@@ -1,5 +1,8 @@
-from typing import Any, Dict
+from typing import Any, Dict, List
 import json
+import os
+
+import requests
 
 from anthropic import AnthropicFoundry
 
@@ -33,6 +36,71 @@ def map_usage(foundry_json: Dict) -> Dict:
         "completion_tokens": comp,
         "total_tokens": total,
     }
+
+
+DEFAULT_EMBEDDINGS_API_VERSION = os.environ.get("EMBEDDINGS_API_VERSION") or os.environ.get("OPENAI_API_VERSION") or "2024-05-01-preview"
+
+
+class FoundryEmbeddingsClient:
+    """Minimal client for Foundry/OpenAI-compatible embeddings endpoints."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        resource: str,
+        model: str,
+        api_version: str | None = None,
+    ) -> None:
+        self._resource = resource
+        self._model = model
+        self._api_key = api_key
+        self._api_version = api_version or DEFAULT_EMBEDDINGS_API_VERSION
+        base_url = f"https://{self._resource}.services.ai.azure.com"
+        self._url = f"{base_url}/openai/deployments/{self._model}/embeddings?api-version={self._api_version}"
+
+    def create_embeddings(self, inputs: List[str] | str) -> Dict:
+        payload = {"input": inputs, "model": self._model}
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": self._api_key,
+        }
+        dlog(
+            "foundry_embeddings_request",
+            {"url": self._url, "payload_preview": str(payload)[:256]},
+        )
+        try:
+            resp = requests.post(self._url, json=payload, headers=headers, timeout=30)
+        except Exception as e:
+            raise ValueError(f"Could not reach Foundry embeddings endpoint: {e}") from e
+
+        if resp.status_code == 404:
+            # Explicit not-supported case for resources without embeddings.
+            raise NotImplementedError(
+                "Embeddings are not available on this Foundry resource/model. "
+                "Verify that the deployment exists and supports the embeddings route."
+            )
+        if resp.status_code >= 400:
+            try:
+                err_json = resp.json()
+                err_msg = err_json.get("error", {}).get("message") or err_json.get("message") or resp.text
+            except Exception:
+                err_msg = resp.text
+            raise ValueError(f"Upstream embeddings error ({resp.status_code}): {err_msg}")
+
+        try:
+            data = resp.json()
+        except Exception as e:
+            raise ValueError(f"Invalid JSON from embeddings response: {e}") from e
+
+        dlog(
+            "foundry_embeddings_response",
+            {
+                "usage": data.get("usage"),
+                "data_len": len(data.get("data", []) or []),
+            },
+        )
+        return data
 
 
 class FoundryAnthropicClient:
