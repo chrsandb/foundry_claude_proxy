@@ -104,9 +104,10 @@ PY
   - `ENABLE_ADMIN_CONFIG_EDIT=1` (or `ADMIN_ALLOW_CONFIG_EDIT=1`) to allow `/admin/config` POST.
   - `ENABLE_ADMIN_USER_MGMT=1` (or `ADMIN_ALLOW_USER_MGMT=1`) to allow `/admin/users` CRUD.
 - Persistence:
-  - Metrics: set `METRICS_FILE` (or `PROXY_METRICS_FILE`) to persist metrics between runs (versioned JSON, atomic writes).
-  - Admin config (safe fields only): set `ADMIN_CONFIG_FILE` (or `PROXY_CONFIG_FILE`).
-  - Proxy auth tokens: set `PROXY_AUTH_FILE` (or `PROXY_USER_FILE`) to store hashed tokens.
+  - Metrics: set `METRICS_FILE` (or `PROXY_METRICS_FILE`) to persist metrics between runs (versioned JSON, atomic writes). Example: `METRICS_FILE=./data/metrics.json`.
+  - Admin config (safe fields only): set `ADMIN_CONFIG_FILE` (or `PROXY_CONFIG_FILE`). Example: `ADMIN_CONFIG_FILE=./data/admin_config.json`.
+  - Proxy auth tokens: set `PROXY_AUTH_FILE` (or `PROXY_USER_FILE`) to store hashed tokens. Example: `PROXY_AUTH_FILE=./data/proxy_tokens.json`.
+  - Paths can be relative to the working directory or absolute; directories are created if needed. Do not commit these files to git.
 - Admin endpoints (all Basic-auth protected):
   - `/admin/health`, `/admin/overview`, `/admin/dashboard` (HTML), `/admin/metrics`, `/admin/metrics/reset`
   - `/admin/config` GET/POST (if enabled)
