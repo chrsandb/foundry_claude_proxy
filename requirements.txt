@@ -4,3 +4,4 @@ requests
 anthropic
 pytest
 bcrypt
+python-dotenv

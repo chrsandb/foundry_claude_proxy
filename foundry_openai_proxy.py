@@ -1,5 +1,6 @@
 import os
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from proxy.routes_models import router as models_router
@@ -16,6 +17,7 @@ from proxy.admin_config import AdminConfigStore
 from proxy.auth_tokens import TokenStore, configure_proxy_auth
 
 
+load_dotenv()
 app = FastAPI()
 app.include_router(models_router)
 app.include_router(chat_router)
