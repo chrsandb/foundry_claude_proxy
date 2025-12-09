@@ -25,25 +25,19 @@ This roadmap outlines planned enhancements for the proxy, focusing on keeping fu
   - `github.copilot.chat.customOAIModels` in VS Code.  
   - Continue extension OpenAI-compatible provider `config.yaml` entries using only `baseUrl`, `apiKey`, and `model`.
 
-## 2. WebUI for configuration and usage stats
+## 2. WebUI for configuration and usage stats (Completed)
 
 2.1 WebUI surface  
-- Build out `proxy/webui/routes.py` into a password-protected UI mounted at `/admin`:
-  - Overview dashboard (uptime, basic request counts).  
-  - Configuration view (current default config, enabled endpoints).  
-  - Usage summary per model/resource (aggregated from in-memory or persisted metrics).
+- Implemented: `/admin` router with health, overview JSON, metrics, config, users, and minimal HTML dashboard (uptime, request/error counts, token totals).
 
 2.2 Authentication and security  
-- Add simple HTTP auth or token-based auth suitable for self-hosted setups.  
-- Ensure `/admin` is fully isolated from the OpenAI endpoints:
-  - No changes to `/v1/*` behavior.  
-  - No leakage of API keys or sensitive config values in UI or logs.
+- Implemented: HTTP Basic auth with bcrypt hashes; `/admin` isolated from `/v1/*`; no secrets logged; admin disabled by default and gated by env flags.
 
-2.3 Configuration editing (stretch)  
-- Optional future feature: minimal config editing from the WebUI:
-  - Update default model or resource.  
-  - Toggle experimental features.  
-- Persist changes safely (e.g., to a config file or environment override), with clear rollback paths.
+2.3 Configuration editing  
+- Implemented (minimal): versioned config store for safe fields (`default_model`, `default_resource`, `flags`) with `/admin/config` GET/POST, optional persistence file.
+
+2.4 User authentication management  
+- Implemented: optional proxy auth tokens (`X-Proxy-Token` or `token:model`) enforced via env flag; tokens stored hashed with `/admin/users` CRUD; proxy auth separated from `/v1/*` and admin Basic auth.
 
 ## 3. HTTPS termination and TLS automation
 
@@ -85,22 +79,16 @@ This roadmap outlines planned enhancements for the proxy, focusing on keeping fu
   - Stable vs. experimental builds.  
   - CPU vs. GPU-optimized (if workload justifies it).
 
-## 5. Extended OpenAI endpoint support
+## 5. Extended OpenAI endpoint support (Completed)
 
 5.1 Embeddings  
-- Add `/v1/embeddings` if/when a suitable embeddings model is available via Azure Foundry:  
-  - Map OpenAI embeddings request to Foundry call.  
-  - Return standard OpenAI `embedding` objects and usage.  
-- If embeddings are not available, return an explicit, OpenAI-style “not supported” error.
+- Implemented: `/v1/embeddings` added, maps OpenAI embeddings request to Foundry OpenAI-style endpoint, returns standard embeddings + usage, explicit not-supported error when unavailable.
 
 5.2 Moderations and other endpoints  
-- Evaluate support for `/v1/moderations` or similar endpoints:  
-  - Map to any available safety/moderation models in Foundry.  
-  - Provide clear errors and documentation if unsupported.
+- Implemented: `/v1/moderations` returns an OpenAI-style `not_supported_error` by default (no compatible Foundry endpoint); optional forwarding to Content Safety left for future opt-in.
 
 5.3 Batch and tools enhancements  
-- Explore batch-like workflows (e.g., processing multiple prompts in a single request) while preserving OpenAI request/response semantics.  
-- Extend tool bridging beyond `read_file` to support additional generic tools (e.g., `write_file`, `search`, etc.), still using standard OpenAI tools schema.
+- Implemented: batch guardrails (array payloads rejected to preserve single-request semantics) and tool bridge expanded beyond `read_file` to support `write_file` and `search` tags/schema. Sequential batch processing intentionally not enabled.
 
 ## 6. Observability and resilience
 
@@ -122,11 +110,7 @@ This roadmap outlines planned enhancements for the proxy, focusing on keeping fu
 ## 7. Developer experience and testing
 
 7.1 Automated tests  
-- Add a minimal pytest suite focused on:
-  - Route behavior (`/v1/chat/completions`, `/v1/completions`, `/v1/models`).  
-  - Tool bridge parsing.  
-  - Config validation and error responses.  
-- Use fixtures to simulate AnthropicFoundry responses without real network calls.
+- Partially implemented: pytest coverage for embeddings/moderations, tool parsing, admin enablement/disablement, and proxy auth enforcement. Additional coverage for `/v1/chat/completions`, `/v1/completions`, `/v1/models`, and config validation still recommended.
 
 7.2 Local dev tooling  
 - Provide convenience scripts or Make targets for:

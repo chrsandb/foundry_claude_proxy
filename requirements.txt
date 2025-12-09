@@ -2,3 +2,5 @@ fastapi
 uvicorn
 requests
 anthropic
+pytest
+bcrypt

@@ -19,7 +19,7 @@ This proxy uses a single auth mode:
 
 - Python 3.9+ with `pip`
 - Packages (installed via `requirements.txt`):
-  - `fastapi`, `uvicorn`, `requests`, `anthropic`
+  - `fastapi`, `uvicorn`, `requests`, `anthropic`, `bcrypt`
 
 ### Install
 
@@ -83,6 +83,45 @@ Local endpoint:
 ```text
 http://127.0.0.1:18000/v1
 ```
+
+### Optional admin interface (`/admin`)
+
+- Disabled by default. Enable via `ENABLE_ADMIN=1` (or `ADMIN_ENABLED=1`) **and** a credential:
+  - Preferred: `ADMIN_PASSWORD_HASH` (bcrypt hash).
+  - Dev-only fallback: `ADMIN_PASSWORD` (plaintext).
+  - Optional: `ADMIN_USERNAME` (default `admin`).
+- Generate a bcrypt hash:
+
+```shell
+python3 - <<'PY'
+import bcrypt
+print(bcrypt.hashpw(b"change-me", bcrypt.gensalt()).decode())
+PY
+```
+
+- Other admin toggles:
+  - `ENABLE_ADMIN_RESET=1` (or `ADMIN_ALLOW_RESET=1`) to allow `/admin/metrics/reset`.
+  - `ENABLE_ADMIN_CONFIG_EDIT=1` (or `ADMIN_ALLOW_CONFIG_EDIT=1`) to allow `/admin/config` POST.
+  - `ENABLE_ADMIN_USER_MGMT=1` (or `ADMIN_ALLOW_USER_MGMT=1`) to allow `/admin/users` CRUD.
+- Persistence:
+  - Metrics: set `METRICS_FILE` (or `PROXY_METRICS_FILE`) to persist metrics between runs (versioned JSON, atomic writes).
+  - Admin config (safe fields only): set `ADMIN_CONFIG_FILE` (or `PROXY_CONFIG_FILE`).
+  - Proxy auth tokens: set `PROXY_AUTH_FILE` (or `PROXY_USER_FILE`) to store hashed tokens.
+- Admin endpoints (all Basic-auth protected):
+  - `/admin/health`, `/admin/overview`, `/admin/dashboard` (HTML), `/admin/metrics`, `/admin/metrics/reset`
+  - `/admin/config` GET/POST (if enabled)
+  - `/admin/users` GET/POST and `/admin/users/{user}` DELETE (if enabled)
+- Security tips: bind to localhost or front with a firewall/reverse proxy; prefer `ADMIN_PASSWORD_HASH`; do not commit metric/config/token files to git.
+
+### Optional proxy auth tokens (protect `/v1/*`)
+
+- Enable enforcement: `ENABLE_PROXY_AUTH=1` (or `PROXY_REQUIRE_AUTH=1`).
+- Provide token store: `PROXY_AUTH_FILE` (or `PROXY_USER_FILE`) to persist hashed tokens.
+- Add/delete tokens via admin `/admin/users` endpoints (if `ENABLE_ADMIN_USER_MGMT` is enabled). Tokens are stored as bcrypt hashes and never returned once stored.
+- Client usage:
+  - Header: `X-Proxy-Token: <token>`
+  - Or prefix the model: `"model": "<token>:claude-sonnet-4-5"` (proxy strips the token and forwards the clean model).
+- Per-request user tracking in metrics uses the validated proxy user ID when present.
 
 ## How it works
 
@@ -160,6 +199,18 @@ data: {"object":"chat.completion.chunk", "finish_reason":"stop"}
 data: [DONE]
 ```
 
+Embeddings (if your Foundry resource exposes an embeddings deployment):
+
+```shell
+curl -s http://127.0.0.1:18000/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer myresource:foundry-key-123" \
+  -d '{
+        "model": "text-embedding-3-large",
+        "input": "embedding me"
+      }'
+```
+
 Legacy completions:
 
 ```shell
@@ -187,10 +238,21 @@ curl -s http://127.0.0.1:18000/v1/completions \
   }
   ```
 
+- `POST /v1/embeddings`  
+  - OpenAI-compatible embeddings request (`model`, `input`, optional `user`).  
+  - Uses the same per-request `apiKey` + `model` decoding to reach the Foundry embeddings deployment (`/openai/deployments/{model}/embeddings`).  
+  - Returns `object: "list"` with `data` items, `embedding` vectors, and `usage`.  
+  - If the resource/model does not expose embeddings, returns an explicit `not_supported_error`.
+
+- `POST /v1/moderations`  
+  - Not supported by default; returns an OpenAI-style `not_supported_error` explaining that Azure AI Foundry does not expose a compatible moderation endpoint.
+
 - `POST /v1/chat/completions`  
   - Standard OpenAI chat format (`model`, `messages`, `stream`, `max_tokens`, `temperature`).
   - Tool bridge:
     - `<read_file><path>...</path></read_file>`
+    - `<write_file><path>...</path><content>...</content></write_file>`
+    - `<search><query>...</query></search>`
     - `<tool_call>{"name":"read_file","arguments":{"path":"/path"}}</tool_call>`
     - Anthropic‑style `[{ "type": "tool_use", "name": "read_file", "input": {...} }]`
   - Normalizes `read_file` arguments to `{"uri": "<path>"}` for file tools that expect a URI‑style parameter.
@@ -327,6 +389,9 @@ Each logical Continue model (`title`) uses only `baseUrl`, `apiKey`, and `model`
 - **401/403/404 from Foundry**  
   - Check that the Foundry resource name you encode (either as the left side of `apiKey = "resource:key"` or as the `resource/` prefix in `model`) matches the resource name from the Azure portal endpoint URL.  
   - Ensure the API key is valid for that resource and has access to the Anthropic/Claude deployment you are calling.
+- **Proxy auth errors (`proxy auth required` / `token invalid`)**  
+  - Ensure `ENABLE_PROXY_AUTH`/`PROXY_REQUIRE_AUTH` is set only when you intend to require tokens.  
+  - Add tokens via `/admin/users` (with user management enabled) and pass them with `X-Proxy-Token` or `token:model` prefix.
 
 - **Anthropic errors**  
   - Look for `foundry_response` in debug output.  

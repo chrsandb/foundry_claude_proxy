@@ -10,6 +10,8 @@ from proxy.encoding import derive_foundry_settings
 from proxy.foundry_client import FoundryAnthropicClient, map_usage
 from proxy.models import to_anthropic_payload, error_response
 from proxy.tools import extract_tool_calls_from_text
+from proxy.metrics import metrics, derive_user_id, ZERO_USAGE
+from proxy.auth_tokens import extract_and_validate_proxy_token
 
 
 router = APIRouter()
@@ -17,16 +19,28 @@ router = APIRouter()
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    settings = None
     try:
         body = await request.json()
     except Exception as e:
         return JSONResponse(error_response(f"Invalid JSON: {e}"))
+
+    if isinstance(body, list):
+        return JSONResponse(
+            error_response("Batch chat requests are not supported; send a single request object.", model=None)
+        )
 
     messages = body.get("messages", [])
     if not messages:
         return JSONResponse(error_response("No 'messages' field provided"))
 
     logical_model = body.get("model")
+    proxy_user = None
+    try:
+        logical_model, proxy_user = extract_and_validate_proxy_token(logical_model, request.headers)
+    except ValueError as e:
+        return JSONResponse(error_response(str(e), model=logical_model or "unknown-model"))
+
     stream = bool(body.get("stream", False))
     # Support both "tools" and legacy "functions" lists; no fallback when client doesn't request tools.
     tool_defs = body.get("tools") or body.get("functions") or []
@@ -52,8 +66,17 @@ async def chat_completions(request: Request):
         logical_api_key = auth_header.split(" ", 1)[1].strip()
     elif os.environ.get("DEV_DEFAULT_LOGICAL_API_KEY"):
         logical_api_key = os.environ["DEV_DEFAULT_LOGICAL_API_KEY"]
+    user_id = proxy_user or derive_user_id(logical_api_key, body.get("user"))
 
     if not logical_model:
+        metrics.record(
+            route="/v1/chat/completions",
+            model=None,
+            resource=None,
+            user_id=user_id,
+            usage=ZERO_USAGE,
+            error=True,
+        )
         return JSONResponse(error_response("No 'model' field provided", model=None))
 
     try:
@@ -75,6 +98,14 @@ async def chat_completions(request: Request):
         error_text = str(e)
         dlog("foundry_config_error", error_text)
         if stream:
+            metrics.record(
+                route="/v1/chat/completions",
+                model=logical_model,
+                resource=settings.resource if settings else None,
+                user_id=user_id,
+                usage=ZERO_USAGE,
+                error=True,
+            )
             async def error_event_gen():
                 created = int(time.time())
                 resp_id = "error"
@@ -111,11 +142,27 @@ async def chat_completions(request: Request):
                 yield "data: [DONE]\n\n"
 
             return StreamingResponse(error_event_gen(), media_type="text/event-stream")
+        metrics.record(
+            route="/v1/chat/completions",
+            model=logical_model,
+            resource=settings.resource if settings else None,
+            user_id=user_id,
+            usage=ZERO_USAGE,
+            error=True,
+        )
         return JSONResponse(error_response(error_text, model=logical_model))
     except Exception as e:
         error_text = str(e)
         dlog("foundry_unexpected_error", error_text)
         if stream:
+            metrics.record(
+                route="/v1/chat/completions",
+                model=logical_model,
+                resource=settings.resource if settings else None,
+                user_id=user_id,
+                usage=ZERO_USAGE,
+                error=True,
+            )
             async def error_event_gen():
                 created = int(time.time())
                 resp_id = "error"
@@ -152,6 +199,14 @@ async def chat_completions(request: Request):
                 yield "data: [DONE]\n\n"
 
             return StreamingResponse(error_event_gen(), media_type="text/event-stream")
+        metrics.record(
+            route="/v1/chat/completions",
+            model=logical_model,
+            resource=settings.resource if settings else None,
+            user_id=user_id,
+            usage=ZERO_USAGE,
+            error=True,
+        )
         return JSONResponse(error_response(error_text, model=logical_model))
 
     # Map Anthropic response (non-stream)
@@ -186,6 +241,14 @@ async def chat_completions(request: Request):
 
     # ---------- STREAMING (SSE, OpenAI-style) ----------
     if stream:
+        metrics.record(
+            route="/v1/chat/completions",
+            model=model_name,
+            resource=settings.resource if settings else None,
+            user_id=user_id,
+            usage=usage_info,
+            error=False,
+        )
         async def event_gen():
             first_delta = {"role": "assistant"}
             if tool_calls:
@@ -244,6 +307,14 @@ async def chat_completions(request: Request):
     # ---------- NON-STREAMING ----------
     # If tools are present, try to bridge tag-based tool markers -> tool_calls
     if has_tools and tool_calls:
+        metrics.record(
+            route="/v1/chat/completions",
+            model=model_name,
+            resource=settings.resource if settings else None,
+            user_id=user_id,
+            usage=usage_info,
+            error=False,
+        )
         return JSONResponse(
             {
                 "id": resp_id,
@@ -266,6 +337,14 @@ async def chat_completions(request: Request):
         )
 
     # Fallback: plain assistant message (no tool calls)
+    metrics.record(
+        route="/v1/chat/completions",
+        model=model_name,
+        resource=settings.resource if settings else None,
+        user_id=user_id,
+        usage=usage_info,
+        error=False,
+    )
     return JSONResponse(
         {
             "id": resp_id,

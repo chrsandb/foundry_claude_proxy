@@ -8,6 +8,8 @@ from proxy.config import dlog
 from proxy.encoding import derive_foundry_settings
 from proxy.foundry_client import FoundryAnthropicClient, map_usage
 from proxy.models import to_anthropic_payload, error_response
+from proxy.metrics import metrics, derive_user_id, ZERO_USAGE
+from proxy.auth_tokens import extract_and_validate_proxy_token
 
 
 router = APIRouter()
@@ -28,6 +30,11 @@ async def completions(request: Request):
     except Exception as e:
         return JSONResponse(error_response(f"Invalid JSON: {e}"))
 
+    if isinstance(body, list):
+        return JSONResponse(
+            error_response("Batch completion requests are not supported; send a single request object.", model=None)
+        )
+
     prompt = body.get("prompt")
     if prompt is None:
         return JSONResponse(error_response("No 'prompt' field provided"))
@@ -38,8 +45,14 @@ async def completions(request: Request):
         prompt = str(prompt)
 
     logical_model = body.get("model")
+    proxy_user = None
+    try:
+        logical_model, proxy_user = extract_and_validate_proxy_token(logical_model, request.headers)
+    except ValueError as e:
+        return JSONResponse(error_response(str(e), model=logical_model or "unknown-model"))
     max_tokens = body.get("max_tokens")
     temperature = body.get("temperature")
+    settings = None
 
     messages = [{"role": "user", "content": prompt}]
 
@@ -54,6 +67,14 @@ async def completions(request: Request):
     )
 
     if not logical_model:
+        metrics.record(
+            route="/v1/completions",
+            model=None,
+            resource=None,
+            user_id=user_id,
+            usage=ZERO_USAGE,
+            error=True,
+        )
         return JSONResponse(error_response("No 'model' field provided", model=None))
 
     # Resolve logical API key from Authorization header or dev override.
@@ -63,6 +84,7 @@ async def completions(request: Request):
         logical_api_key = auth_header.split(" ", 1)[1].strip()
     elif os.environ.get("DEV_DEFAULT_LOGICAL_API_KEY"):
         logical_api_key = os.environ["DEV_DEFAULT_LOGICAL_API_KEY"]
+    user_id = proxy_user or derive_user_id(logical_api_key, body.get("user"))
 
     try:
         payload = to_anthropic_payload(messages)
@@ -80,8 +102,24 @@ async def completions(request: Request):
         )
     except ValueError as e:
         # Configuration/derivation error: return OpenAI-style error payload.
+        metrics.record(
+            route="/v1/completions",
+            model=logical_model,
+            resource=settings.resource if settings else None,
+            user_id=user_id,
+            usage=ZERO_USAGE,
+            error=True,
+        )
         return JSONResponse(error_response(str(e), model=logical_model))
     except Exception as e:
+        metrics.record(
+            route="/v1/completions",
+            model=logical_model,
+            resource=settings.resource if settings else None,
+            user_id=user_id,
+            usage=ZERO_USAGE,
+            error=True,
+        )
         return JSONResponse(error_response(str(e), model=logical_model))
 
     # Map Anthropic response -> completion.text
@@ -104,6 +142,15 @@ async def completions(request: Request):
     created_raw = foundry_json.get("created_at", 0) or 0
     created = int(created_raw) if created_raw else int(time.time())
     resp_id = foundry_json.get("id", "resp_local")
+
+    metrics.record(
+        route="/v1/completions",
+        model=model_name,
+        resource=settings.resource if settings else None,
+        user_id=user_id,
+        usage=usage_info,
+        error=False,
+    )
 
     return JSONResponse(
         {
