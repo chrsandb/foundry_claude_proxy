@@ -25,6 +25,11 @@ async def completions(request: Request):
     - max_tokens, temperature -> Anthropic parameters
     and returns an OpenAI-style text completion response.
     """
+    start_time = time.time()
+
+    def duration_ms() -> int:
+        return int((time.time() - start_time) * 1000)
+
     try:
         body = await request.json()
     except Exception as e:
@@ -50,6 +55,16 @@ async def completions(request: Request):
         logical_model, proxy_user = extract_and_validate_proxy_token(logical_model, request.headers)
     except ValueError as e:
         return JSONResponse(error_response(str(e), model=logical_model or "unknown-model"))
+
+    # Resolve logical API key from Authorization header or dev override.
+    logical_api_key = None
+    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        logical_api_key = auth_header.split(" ", 1)[1].strip()
+    elif os.environ.get("DEV_DEFAULT_LOGICAL_API_KEY"):
+        logical_api_key = os.environ["DEV_DEFAULT_LOGICAL_API_KEY"]
+    user_id = proxy_user or derive_user_id(logical_api_key, body.get("user"))
+
     max_tokens = body.get("max_tokens")
     temperature = body.get("temperature")
     settings = None
@@ -74,17 +89,9 @@ async def completions(request: Request):
             user_id=user_id,
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(error_response("No 'model' field provided", model=None))
-
-    # Resolve logical API key from Authorization header or dev override.
-    logical_api_key = None
-    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
-    if auth_header and auth_header.lower().startswith("bearer "):
-        logical_api_key = auth_header.split(" ", 1)[1].strip()
-    elif os.environ.get("DEV_DEFAULT_LOGICAL_API_KEY"):
-        logical_api_key = os.environ["DEV_DEFAULT_LOGICAL_API_KEY"]
-    user_id = proxy_user or derive_user_id(logical_api_key, body.get("user"))
 
     try:
         payload = to_anthropic_payload(messages)
@@ -109,6 +116,7 @@ async def completions(request: Request):
             user_id=user_id,
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(error_response(str(e), model=logical_model))
     except Exception as e:
@@ -119,6 +127,7 @@ async def completions(request: Request):
             user_id=user_id,
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(error_response(str(e), model=logical_model))
 
@@ -150,6 +159,7 @@ async def completions(request: Request):
         user_id=user_id,
         usage=usage_info,
         error=False,
+        duration_ms=duration_ms(),
     )
 
     return JSONResponse(

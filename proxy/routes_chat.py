@@ -19,6 +19,11 @@ router = APIRouter()
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    start_time = time.time()
+
+    def duration_ms() -> int:
+        return int((time.time() - start_time) * 1000)
+
     settings = None
     try:
         body = await request.json()
@@ -76,6 +81,7 @@ async def chat_completions(request: Request):
             user_id=user_id,
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(error_response("No 'model' field provided", model=None))
 
@@ -105,6 +111,7 @@ async def chat_completions(request: Request):
                 user_id=user_id,
                 usage=ZERO_USAGE,
                 error=True,
+                duration_ms=duration_ms(),
             )
             async def error_event_gen():
                 created = int(time.time())
@@ -149,6 +156,7 @@ async def chat_completions(request: Request):
             user_id=user_id,
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(error_response(error_text, model=logical_model))
     except Exception as e:
@@ -162,6 +170,7 @@ async def chat_completions(request: Request):
                 user_id=user_id,
                 usage=ZERO_USAGE,
                 error=True,
+                duration_ms=duration_ms(),
             )
             async def error_event_gen():
                 created = int(time.time())
@@ -206,6 +215,7 @@ async def chat_completions(request: Request):
             user_id=user_id,
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(error_response(error_text, model=logical_model))
 
@@ -248,6 +258,7 @@ async def chat_completions(request: Request):
             user_id=user_id,
             usage=usage_info,
             error=False,
+            duration_ms=duration_ms(),
         )
         async def event_gen():
             first_delta = {"role": "assistant"}
@@ -314,6 +325,7 @@ async def chat_completions(request: Request):
             user_id=user_id,
             usage=usage_info,
             error=False,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(
             {
@@ -344,6 +356,7 @@ async def chat_completions(request: Request):
         user_id=user_id,
         usage=usage_info,
         error=False,
+        duration_ms=duration_ms(),
     )
     return JSONResponse(
         {

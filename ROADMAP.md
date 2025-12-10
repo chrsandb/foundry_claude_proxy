@@ -28,16 +28,19 @@ This roadmap outlines planned enhancements for the proxy, focusing on keeping fu
 ## 2. WebUI for configuration and usage stats (Completed)
 
 2.1 WebUI surface  
-- Implemented: `/admin` router with health, overview JSON, metrics, config, users, and minimal HTML dashboard (uptime, request/error counts, token totals).
+- Implemented: `/admin` router serves a rich HTML/CSS/JS dashboard with navigation to dashboard, users, metrics, config, and logs. Dashboard shows uptime, req/error counts, users, and latency cards; users table supports search, pagination, detail drawer, enable/disable/reset/delete with token copy; metrics table + req/error + latency charts (poll-based).
 
 2.2 Authentication and security  
-- Implemented: HTTP Basic auth with bcrypt hashes; `/admin` isolated from `/v1/*`; no secrets logged; admin disabled by default and gated by env flags.
+- Implemented: HTTP Basic auth with bcrypt hashes; `/admin` isolated from `/v1/*`; admin disabled by default and gated by env flags.
 
 2.3 Configuration editing  
 - Implemented (minimal): versioned config store for safe fields (`default_model`, `default_resource`, `flags`) with `/admin/config` GET/POST, optional persistence file.
 
 2.4 User authentication management  
-- Implemented: optional proxy auth tokens (`X-Proxy-Token` or `token:model`) enforced via env flag; tokens stored hashed with `/admin/users` CRUD; proxy auth separated from `/v1/*` and admin Basic auth.
+- Implemented: optional proxy auth tokens (`X-Proxy-Token` or `token:model`) enforced via env flag; tokens stored hashed with `/admin/users` CRUD; proxy auth separated from `/v1/*` and admin Basic auth; user metadata (email/display name), enable/disable, reset token, and last-used tracking supported.
+
+2.5 Admin events/logs  
+- Implemented: in-memory admin event log with optional file persistence (`ADMIN_EVENTS_FILE`) and NDJSON download endpoint + UI control; logs surface user/config/metrics actions in the `/admin` Logs view.
 
 ## 3. HTTPS termination and TLS automation
 
@@ -93,10 +96,8 @@ This roadmap outlines planned enhancements for the proxy, focusing on keeping fu
 ## 6. Observability and resilience
 
 6.1 Metrics and logging improvements  
-- Add optional structured logging (JSON) for easier ingestion into log systems.  
-- Expose basic metrics (requests, errors, latency) via:
-  - A simple `/metrics` endpoint (optionally Prometheus-compatible) or  
-  - The `/admin` WebUI.
+- Partially implemented: per-route counts, errors, token usage, and latency (avg/p50/p95/p99) recorded; surfaced via `/admin` APIs and dashboards with charts.  
+- TODO: optional structured logging (JSON) and Prometheus-style `/metrics` export for external ingestion.
 
 6.2 Retry and timeout policies  
 - Introduce configurable timeouts and limited retry logic for upstream Foundry calls.  
@@ -124,6 +125,9 @@ This roadmap outlines planned enhancements for the proxy, focusing on keeping fu
   - curl / HTTP clients.  
   - Popular OpenAI-compatible tools (LM Studio, etc.)  
   at the proxy, emphasizing that no client changes are required.
+
+7.4 Admin smoke walkthrough  
+- Implemented: manual smoke checklist for `/admin` flows (users, metrics, logs/download, config) in `tests/ADMIN_SMOKE.md`; automated UI tests still optional future work.
 
 ## 8. Backwards compatibility and versioning
 

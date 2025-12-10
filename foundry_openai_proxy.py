@@ -53,7 +53,8 @@ configure_proxy_auth(token_store, proxy_auth_required)
 # Optionally mount /admin when explicitly enabled and configured.
 _admin_config = load_admin_auth_config()
 if _admin_config.enabled:
-    _admin_state = init_admin_state(_admin_config, admin_config_store, token_store)
+    admin_events_path = os.environ.get("ADMIN_EVENTS_FILE") or os.environ.get("PROXY_ADMIN_EVENTS_FILE")
+    _admin_state = init_admin_state(_admin_config, admin_config_store, token_store, event_log_path=admin_events_path)
     app.include_router(create_admin_router(_admin_config, _admin_state))
 else:
     if _admin_config.disabled_reason:

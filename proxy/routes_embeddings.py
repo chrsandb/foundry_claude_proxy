@@ -28,6 +28,11 @@ def embeddings_error(message: str, model: str | None, err_type: str = "invalid_r
 
 @router.post("/v1/embeddings")
 async def create_embeddings(request: Request):
+    start_time = time.time()
+
+    def duration_ms() -> int:
+        return int((time.time() - start_time) * 1000)
+
     try:
         body = await request.json()
     except Exception as e:
@@ -38,6 +43,7 @@ async def create_embeddings(request: Request):
             user_id="unknown",
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(embeddings_error(f"Invalid JSON: {e}", None), status_code=400)
 
@@ -55,6 +61,7 @@ async def create_embeddings(request: Request):
             user_id="unknown",
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(embeddings_error("No 'model' field provided", None), status_code=400)
 
@@ -67,6 +74,7 @@ async def create_embeddings(request: Request):
             user_id=user_id if "user_id" in locals() else "unknown",
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(embeddings_error("No 'input' field provided", logical_model), status_code=400)
 
@@ -118,6 +126,7 @@ async def create_embeddings(request: Request):
             user_id=user_id,
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(embeddings_error(str(e), logical_model, err_type="not_supported_error"), status_code=400)
     except ValueError as e:
@@ -128,6 +137,7 @@ async def create_embeddings(request: Request):
             user_id=user_id,
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(embeddings_error(str(e), logical_model), status_code=400)
     except Exception as e:
@@ -138,6 +148,7 @@ async def create_embeddings(request: Request):
             user_id=user_id,
             usage=ZERO_USAGE,
             error=True,
+            duration_ms=duration_ms(),
         )
         return JSONResponse(embeddings_error(str(e), logical_model, err_type="server_error"), status_code=500)
 
@@ -165,6 +176,7 @@ async def create_embeddings(request: Request):
         user_id=user_id,
         usage=usage_info,
         error=False,
+        duration_ms=duration_ms(),
     )
     response = {
         "object": "list",

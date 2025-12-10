@@ -103,15 +103,23 @@ PY
   - `ENABLE_ADMIN_RESET=1` (or `ADMIN_ALLOW_RESET=1`) to allow `/admin/metrics/reset`.
   - `ENABLE_ADMIN_CONFIG_EDIT=1` (or `ADMIN_ALLOW_CONFIG_EDIT=1`) to allow `/admin/config` POST.
   - `ENABLE_ADMIN_USER_MGMT=1` (or `ADMIN_ALLOW_USER_MGMT=1`) to allow `/admin/users` CRUD.
+  - `ADMIN_EVENTS_FILE` (or `PROXY_ADMIN_EVENTS_FILE`) to persist admin event logs (in-memory if unset).
 - Persistence:
   - Metrics: set `METRICS_FILE` (or `PROXY_METRICS_FILE`) to persist metrics between runs (versioned JSON, atomic writes). Example: `METRICS_FILE=./data/metrics.json`.
   - Admin config (safe fields only): set `ADMIN_CONFIG_FILE` (or `PROXY_CONFIG_FILE`). Example: `ADMIN_CONFIG_FILE=./data/admin_config.json`.
   - Proxy auth tokens: set `PROXY_AUTH_FILE` (or `PROXY_USER_FILE`) to store hashed tokens. Example: `PROXY_AUTH_FILE=./data/proxy_tokens.json`.
   - Paths can be relative to the working directory or absolute; directories are created if needed. Do not commit these files to git.
 - Admin endpoints (all Basic-auth protected):
-  - `/admin/health`, `/admin/overview`, `/admin/dashboard` (HTML), `/admin/metrics`, `/admin/metrics/reset`
-  - `/admin/config` GET/POST (if enabled)
-  - `/admin/users` GET/POST and `/admin/users/{user}` DELETE (if enabled)
+  - HTML/SPA: `/admin` (dashboard), `/admin/dashboard`
+  - Status/metrics JSON: `/admin/health`, `/admin/api/summary`, `/admin/api/metrics`, `/admin/metrics`, `/admin/metrics/reset`
+  - Config: `/admin/config` GET/POST (or `/admin/api/config`) if config edit enabled
+  - Users: `/admin/users` GET/POST, `/admin/users/{user}` GET/PATCH/DELETE, `/admin/users/{user}/enable|disable|reset` (if user mgmt enabled)
+  - Logs: `/admin/logs` (event feed) and `/admin/logs/download` (NDJSON export; uses `ADMIN_EVENTS_FILE` if set)
+- WebUI features:
+  - Dashboard cards for uptime, requests/errors, users, latency; req/error/latency charts.
+  - Users table with search, paging, detail drawer, enable/disable/reset/delete; token copy on create/reset.
+  - Config snapshot/flags view; metrics table with token usage + latency columns.
+  - Logs panel shows recent admin events and download control; respects persisted event file when configured.
 - Security tips: bind to localhost or front with a firewall/reverse proxy; prefer `ADMIN_PASSWORD_HASH`; do not commit metric/config/token files to git.
 
 ### Optional proxy auth tokens (protect `/v1/*`)

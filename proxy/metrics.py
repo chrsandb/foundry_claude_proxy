@@ -52,6 +52,8 @@ class RouteMetrics:
     by_model: Dict[str, TokenUsage] = field(default_factory=dict)
     by_resource: Dict[str, TokenUsage] = field(default_factory=dict)
     by_user: Dict[str, TokenUsage] = field(default_factory=dict)
+    durations_ms: list[float] = field(default_factory=list)
+    durations_sum_ms: float = 0.0
 
     def to_dict(self) -> Dict:
         def usage_to_dict(u: TokenUsage) -> Dict:
@@ -69,10 +71,27 @@ class RouteMetrics:
             "by_model": {k: usage_to_dict(v) for k, v in self.by_model.items()},
             "by_resource": {k: usage_to_dict(v) for k, v in self.by_resource.items()},
             "by_user": {k: usage_to_dict(v) for k, v in self.by_user.items()},
+            "latency_ms": self._latency_snapshot(),
         }
+
+    def _latency_snapshot(self) -> Dict:
+        if not self.durations_ms:
+            return {"avg": 0.0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "count": 0}
+        sorted_vals = sorted(self.durations_ms)
+        n = len(sorted_vals)
+
+        def pct(p: float) -> float:
+            if n == 1:
+                return sorted_vals[0]
+            idx = min(n - 1, int(round(p * (n - 1))))
+            return sorted_vals[idx]
+
+        avg = self.durations_sum_ms / n if n else 0.0
+        return {"avg": avg, "p50": pct(0.50), "p95": pct(0.95), "p99": pct(0.99), "count": n}
 
 
 METRICS_SCHEMA_VERSION = 1
+MAX_LATENCY_SAMPLES = 200
 
 
 class MetricsTracker:
@@ -106,6 +125,7 @@ class MetricsTracker:
         user_id: str,
         usage: Dict,
         error: bool = False,
+        duration_ms: Optional[float] = None,
     ) -> None:
         with self._lock:
             metrics = self._routes.setdefault(route, RouteMetrics())
@@ -114,6 +134,12 @@ class MetricsTracker:
                 metrics.error_count += 1
             metrics.last_seen = _now()
             metrics.usage.add(usage)
+            if duration_ms is not None:
+                metrics.durations_ms.append(float(duration_ms))
+                metrics.durations_sum_ms += float(duration_ms)
+                if len(metrics.durations_ms) > MAX_LATENCY_SAMPLES:
+                    removed = metrics.durations_ms.pop(0)
+                    metrics.durations_sum_ms -= removed
 
             model_key = model or "unknown-model"
             resource_key = resource or "unknown-resource"
